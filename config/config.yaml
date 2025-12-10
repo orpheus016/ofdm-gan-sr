@@ -1,0 +1,124 @@
+# =============================================================================
+# CWGAN-GP OFDM Signal Reconstruction - Configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# OFDM Parameters
+# -----------------------------------------------------------------------------
+ofdm:
+  frame_length: 1024          # Number of samples per OFDM frame
+  num_subcarriers: 64         # Number of OFDM subcarriers
+  cp_length: 16               # Cyclic prefix length
+  modulation: "QAM16"         # Modulation scheme: QPSK, QAM16, QAM64
+  pilot_spacing: 8            # Pilot subcarrier spacing
+
+# -----------------------------------------------------------------------------
+# Channel Parameters (for synthetic data generation)
+# -----------------------------------------------------------------------------
+channel:
+  snr_range: [0, 30]          # SNR range in dB for training
+  snr_test: [5, 10, 15, 20]   # SNR values for testing
+  channel_type: "rayleigh"    # Channel type: awgn, rayleigh, rician
+  doppler_freq: 100           # Max Doppler frequency (Hz)
+  delay_spread: 5e-6          # RMS delay spread (seconds)
+
+# -----------------------------------------------------------------------------
+# Model Architecture
+# -----------------------------------------------------------------------------
+model:
+  # Generator (1D U-Net)
+  generator:
+    input_channels: 2         # I and Q components
+    output_channels: 2
+    base_channels: 32         # Base channel width
+    depth: 5                  # Number of encoder/decoder levels
+    kernel_size: 3
+    activation: "leaky_relu"
+    leaky_slope: 0.2
+    output_activation: "tanh"
+    use_skip_add: true        # Additive skip connections (not concat)
+    
+  # Discriminator (1D CNN Critic)
+  discriminator:
+    input_channels: 4         # Conditional: candidate(2) + condition(2)
+    base_channels: 32
+    num_layers: 6
+    kernel_size: 3
+    activation: "leaky_relu"
+    leaky_slope: 0.2
+    use_spectral_norm: false
+
+# -----------------------------------------------------------------------------
+# Training Configuration
+# -----------------------------------------------------------------------------
+training:
+  # Basic settings
+  batch_size: 32
+  epochs: 200
+  
+  # Optimizer settings
+  optimizer:
+    type: "adam"
+    lr_generator: 1e-4
+    lr_discriminator: 1e-4
+    betas: [0.0, 0.9]         # WGAN-GP typically uses beta1=0
+    weight_decay: 0
+  
+  # CWGAN-GP specific
+  n_critic: 5                 # Discriminator steps per generator step
+  gp_weight: 10.0             # Gradient penalty coefficient (lambda)
+  
+  # Loss weights
+  loss:
+    adversarial_weight: 1.0
+    reconstruction_weight: 100.0  # L1 loss weight
+    
+  # Learning rate scheduling
+  scheduler:
+    type: "step"
+    step_size: 50
+    gamma: 0.5
+    
+  # Checkpointing
+  checkpoint_interval: 10
+  save_best: true
+
+# -----------------------------------------------------------------------------
+# Quantization (for FPGA deployment)
+# -----------------------------------------------------------------------------
+quantization:
+  enabled: true
+  weight_bits: 8              # INT8 weights
+  activation_bits: 16         # INT16 activations
+  accumulator_bits: 32        # INT32 accumulators
+  per_channel_scale: true     # Per-channel quantization scales
+  
+# -----------------------------------------------------------------------------
+# FPGA Target Specifications
+# -----------------------------------------------------------------------------
+fpga:
+  target_device: "Xilinx_ZCU104"  # Target FPGA board
+  clock_freq_mhz: 200         # Target clock frequency
+  dsp_slices: 1728            # Available DSP48 slices
+  bram_kb: 11000              # Available BRAM in KB
+  
+# -----------------------------------------------------------------------------
+# Data Paths
+# -----------------------------------------------------------------------------
+paths:
+  data_dir: "./data"
+  train_dir: "./data/train"
+  val_dir: "./data/val"
+  test_dir: "./data/test"
+  checkpoint_dir: "./checkpoints"
+  log_dir: "./logs"
+  export_dir: "./export"      # For FPGA weight export
+  
+# -----------------------------------------------------------------------------
+# Logging & Visualization
+# -----------------------------------------------------------------------------
+logging:
+  log_interval: 100           # Log every N batches
+  tensorboard: true
+  save_samples: true
+  sample_interval: 500        # Save sample images every N batches
