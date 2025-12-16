@@ -16,7 +16,7 @@ module weight_rom #(
 )(
     input  wire                     clk,
     input  wire [ADDR_WIDTH-1:0]    addr,
-    output reg  [WEIGHT_WIDTH-1:0]  data
+    output reg  signed [WEIGHT_WIDTH-1:0]  data
 );
 
     //--------------------------------------------------------------------------
@@ -39,7 +39,12 @@ module weight_rom #(
     //   Dense: 16*1   = 16 weights  [736:751]
     //--------------------------------------------------------------------------
     
+    integer init_i;
     initial begin
+        // Initialize ALL weights to zero first to avoid X propagation
+        for (init_i = 0; init_i < DEPTH; init_i = init_i + 1)
+            weights[init_i] = 8'h00;
+            
         // Initialize with pseudo-random values in [0, 1) range
         // In Q1.7: 0x00 to 0x7F represents 0.0 to 0.992
         // These would be replaced with trained weights
@@ -177,12 +182,17 @@ module bias_rom #(
 )(
     input  wire                     clk,
     input  wire [ADDR_WIDTH-1:0]    addr,
-    output reg  [DATA_WIDTH-1:0]    data
+    output reg  signed [DATA_WIDTH-1:0]    data
 );
 
     reg [DATA_WIDTH-1:0] biases [0:DEPTH-1];
     
+    integer init_i;
     initial begin
+        // Initialize ALL biases to zero first to avoid X propagation
+        for (init_i = 0; init_i < DEPTH; init_i = init_i + 1)
+            biases[init_i] = 16'h0000;
+            
         //----------------------------------------------------------------------
         // Generator Biases
         //----------------------------------------------------------------------

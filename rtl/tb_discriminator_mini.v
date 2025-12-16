@@ -296,50 +296,77 @@ module tb_discriminator_mini;
             captured_score = 0;
             
             $display("  Starting inference...");
+            
+            // Wait for DUT to be in IDLE state
+            wait(dut.state == 4'd0);  // ST_IDLE
+            repeat(2) @(posedge clk);
+            
             @(posedge clk);
             start = 1;
             start_cycle = cycle_count;
             @(posedge clk);
             start = 0;
             
-            // Load candidate data (2 channels)
+            // Wait for LOAD_CAND state
+            wait(dut.state == 4'd1);  // ST_LOAD_CAND
+            
+            // Load candidate data (2 channels × FRAME_LEN samples)
             ch_idx = 0;
             pos_idx = 0;
-            while (ch_idx < 2 && cycle_count < start_cycle + TIMEOUT) begin
+            while (ch_idx < 2) begin
                 @(posedge clk);
-                if (ready_in && dut.state == 4'd1) begin  // ST_LOAD_CAND
+                if (cycle_count > start_cycle + TIMEOUT) begin
+                    $display("  ERROR: Candidate loading timeout!");
+                    ch_idx = 2; // Exit loop
+                end else if (ready_in) begin
                     cand_in = cand_data[ch_idx][pos_idx];
                     cand_valid = 1;
-                    pos_idx = pos_idx + 1;
-                    if (pos_idx == FRAME_LEN) begin
-                        pos_idx = 0;
-                        ch_idx = ch_idx + 1;
+                    // Check if sample was accepted
+                    if (ready_in && cand_valid) begin
+                        pos_idx = pos_idx + 1;
+                        if (pos_idx == FRAME_LEN) begin
+                            pos_idx = 0;
+                            ch_idx = ch_idx + 1;
+                        end
                     end
                 end else begin
                     cand_valid = 0;
                 end
             end
+            // Keep valid high for one more cycle to ensure state transition
+            @(posedge clk);
             cand_valid = 0;
             
             $display("  Candidate loaded: 2 channels × %0d samples", FRAME_LEN);
             
-            // Load condition data (2 channels)
+            // Wait for LOAD_COND state
+            wait(dut.state == 4'd2);  // ST_LOAD_COND
+            
+            // Load condition data (2 channels × FRAME_LEN samples)
             ch_idx = 0;
             pos_idx = 0;
-            while (ch_idx < 2 && cycle_count < start_cycle + TIMEOUT) begin
+            while (ch_idx < 2) begin
                 @(posedge clk);
-                if (ready_in && dut.state == 4'd2) begin  // ST_LOAD_COND
+                if (cycle_count > start_cycle + TIMEOUT) begin
+                    $display("  ERROR: Condition loading timeout!");
+                    ch_idx = 2; // Exit loop
+                end else if (ready_in) begin
                     cond_in = cond_data[ch_idx][pos_idx];
                     cond_valid = 1;
-                    pos_idx = pos_idx + 1;
-                    if (pos_idx == FRAME_LEN) begin
-                        pos_idx = 0;
-                        ch_idx = ch_idx + 1;
+                    // Check if sample was accepted
+                    if (ready_in && cond_valid) begin
+                        pos_idx = pos_idx + 1;
+                        if (pos_idx == FRAME_LEN) begin
+                            pos_idx = 0;
+                            ch_idx = ch_idx + 1;
+                        end
                     end
                 end else begin
                     cond_valid = 0;
                 end
             end
+            // Keep valid high for one more cycle to ensure state transition
+            @(posedge clk);
             cond_valid = 0;
             
             $display("  Condition loaded: 2 channels × %0d samples", FRAME_LEN);
@@ -381,7 +408,9 @@ module tb_discriminator_mini;
                 total_errors = total_errors + error_count;
             end
             
-            repeat(20) @(posedge clk);
+            // Wait for return to IDLE
+            wait(dut.state == 4'd0);
+            repeat(10) @(posedge clk);
         end
     endtask
     

@@ -314,6 +314,8 @@ module tb_generator_mini;
     //--------------------------------------------------------------------------
     // Test Execution Task
     //--------------------------------------------------------------------------
+    reg input_timeout;
+    
     task run_test;
         input integer test_id;
         begin
@@ -322,28 +324,53 @@ module tb_generator_mini;
             error_count = 0;
             in_idx = 0;
             out_idx = 0;
+            input_timeout = 0;
+            
+            // Clear captured outputs
+            for (i = 0; i < OUT_CH * FRAME_LEN; i = i + 1)
+                captured_output[i] = 16'hDEAD;
             
             $display("  Starting inference...");
+            
+            // Wait for DUT to be ready
+            wait(dut.state == 4'd0);  // ST_IDLE
+            repeat(2) @(posedge clk);
+            
+            // Issue start
             @(posedge clk);
             start = 1;
             start_cycle = cycle_count;
             @(posedge clk);
             start = 0;
             
-            // Load input data
-            while (in_idx < IN_CH * FRAME_LEN && cycle_count < start_cycle + TIMEOUT) begin
+            // Wait for LOAD_IN state
+            wait(dut.state == 4'd1);  // ST_LOAD_IN
+            
+            // Load input data with proper handshaking
+            while (in_idx < IN_CH * FRAME_LEN && !input_timeout) begin
                 @(posedge clk);
-                if (ready_in) begin
-                    data_in = test_input[in_idx];
-                    valid_in = 1;
-                    cond_in = test_input[in_idx];
-                    cond_valid = 1;
-                    in_idx = in_idx + 1;
+                if (cycle_count > start_cycle + TIMEOUT) begin
+                    $display("  ERROR: Input loading timeout at sample %0d!", in_idx);
+                    input_timeout = 1;
                 end else begin
-                    valid_in = 0;
-                    cond_valid = 0;
+                    if (ready_in) begin
+                        data_in = test_input[in_idx];
+                        valid_in = 1;
+                        cond_in = test_input[in_idx];
+                        cond_valid = 1;
+                    end else begin
+                        valid_in = 0;
+                        cond_valid = 0;
+                    end
+                    // Check if sample was accepted on this cycle
+                    if (ready_in && valid_in) begin
+                        in_idx = in_idx + 1;
+                    end
                 end
             end
+            
+            // Wait for generator to leave LOAD_IN state before clearing valid
+            @(posedge clk);
             valid_in = 0;
             cond_valid = 0;
             
@@ -352,7 +379,7 @@ module tb_generator_mini;
             // Wait for processing and capture output
             while (!done && cycle_count < start_cycle + TIMEOUT) begin
                 @(posedge clk);
-                if (valid_out && ready_out) begin
+                if (valid_out && ready_out && out_idx < OUT_CH * FRAME_LEN) begin
                     captured_output[out_idx] = data_out;
                     out_idx = out_idx + 1;
                 end
@@ -364,6 +391,8 @@ module tb_generator_mini;
             if (!done) begin
                 $display("  ERROR: Timeout after %0d cycles!", TIMEOUT);
                 $display("    Last state: %s", state_name);
+                $display("    in_ch_cnt=%0d, in_pos_cnt=%0d", dut.in_ch_cnt, dut.in_pos_cnt);
+                $display("    out_ch_cnt=%0d, out_pos_cnt=%0d", dut.out_ch_cnt, dut.out_pos_cnt);
                 error_count = error_count + 100;
             end else begin
                 $display("  Processing complete!");
@@ -398,7 +427,9 @@ module tb_generator_mini;
                 total_errors = total_errors + error_count;
             end
             
-            repeat(20) @(posedge clk);
+            // Wait for done to clear and return to IDLE
+            wait(dut.state == 4'd0);
+            repeat(10) @(posedge clk);
         end
     endtask
     

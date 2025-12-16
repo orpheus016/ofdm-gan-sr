@@ -15,8 +15,8 @@ param(
 )
 
 # Tool paths (adjust as needed)
-$IVERILOG = "iverilog"
-$VVP = "vvp"
+$IVERILOG = "C:\iverilog\bin\iverilog.exe"
+$VVP = "C:\iverilog\bin\vvp.exe"
 
 # Source files
 $GEN_SRC = @(
