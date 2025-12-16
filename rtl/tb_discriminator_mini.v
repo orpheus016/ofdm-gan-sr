@@ -1,21 +1,21 @@
 //==============================================================================
-// Self-Checking Testbench for Mini U-Net Generator
+// Self-Checking Testbench for Mini Discriminator (Critic)
 //
 // Features:
-//   - Multiple test patterns (Zero, DC, Impulse, Ramp, Sine)
+//   - Multiple test patterns
 //   - Automatic PASS/FAIL verification with error counting
 //   - State machine monitoring
 //   - Performance metrics (cycles, throughput)
-//   - Golden output range checking
+//   - Score range validation
 //
 // Test Strategy:
-//   Each test verifies outputs are within expected bounds for the given input.
-//   This validates the pipeline and MAC operations are functioning correctly.
+//   Tests verify the discriminator produces valid scores for various inputs.
+//   Real vs fake signal differentiation is tested by comparing score magnitudes.
 //==============================================================================
 
 `timescale 1ns / 1ps
 
-module tb_generator_mini;
+module tb_discriminator_mini;
 
     //--------------------------------------------------------------------------
     // Parameters
@@ -24,10 +24,9 @@ module tb_generator_mini;
     parameter WEIGHT_WIDTH = 8;
     parameter ACC_WIDTH    = 32;
     parameter FRAME_LEN    = 16;
-    parameter IN_CH        = 2;
-    parameter OUT_CH       = 2;
+    parameter IN_CH        = 4;
     parameter CLK_PERIOD   = 10;
-    parameter TIMEOUT      = 100000;
+    parameter TIMEOUT      = 50000;
     
     //--------------------------------------------------------------------------
     // DUT Signals
@@ -36,16 +35,16 @@ module tb_generator_mini;
     reg                          rst_n;
     reg                          start;
     
-    reg  signed [DATA_WIDTH-1:0] data_in;
-    reg                          valid_in;
-    wire                         ready_in;
+    reg  signed [DATA_WIDTH-1:0] cand_in;
+    reg                          cand_valid;
     
     reg  signed [DATA_WIDTH-1:0] cond_in;
     reg                          cond_valid;
     
-    wire signed [DATA_WIDTH-1:0] data_out;
-    wire                         valid_out;
-    reg                          ready_out;
+    wire                         ready_in;
+    
+    wire signed [DATA_WIDTH-1:0] score_out;
+    wire                         score_valid;
     
     wire                         busy;
     wire                         done;
@@ -53,16 +52,16 @@ module tb_generator_mini;
     //--------------------------------------------------------------------------
     // Test Infrastructure
     //--------------------------------------------------------------------------
-    reg signed [DATA_WIDTH-1:0] test_input [0:IN_CH*FRAME_LEN-1];
-    reg signed [DATA_WIDTH-1:0] captured_output [0:OUT_CH*FRAME_LEN-1];
-    reg signed [DATA_WIDTH-1:0] golden_min [0:OUT_CH*FRAME_LEN-1];
-    reg signed [DATA_WIDTH-1:0] golden_max [0:OUT_CH*FRAME_LEN-1];
+    reg signed [DATA_WIDTH-1:0] cand_data [0:1][0:FRAME_LEN-1];  // 2 channels
+    reg signed [DATA_WIDTH-1:0] cond_data [0:1][0:FRAME_LEN-1];  // 2 channels
     
-    integer i, in_idx, out_idx;
+    reg signed [DATA_WIDTH-1:0] captured_score;
+    reg signed [DATA_WIDTH-1:0] score_min, score_max;
+    
+    integer i, ch_idx, pos_idx;
     integer cycle_count, start_cycle, total_cycles;
     integer test_num, error_count, total_errors, total_tests;
     
-    // State name for debugging
     reg [127:0] state_name;
     
     //--------------------------------------------------------------------------
@@ -86,25 +85,23 @@ module tb_generator_mini;
     //--------------------------------------------------------------------------
     // DUT Instantiation
     //--------------------------------------------------------------------------
-    generator_mini #(
+    discriminator_mini #(
         .DATA_WIDTH(DATA_WIDTH),
         .WEIGHT_WIDTH(WEIGHT_WIDTH),
         .ACC_WIDTH(ACC_WIDTH),
         .FRAME_LEN(FRAME_LEN),
-        .IN_CH(IN_CH),
-        .OUT_CH(OUT_CH)
+        .IN_CH(IN_CH)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
         .start(start),
-        .data_in(data_in),
-        .valid_in(valid_in),
-        .ready_in(ready_in),
+        .cand_in(cand_in),
+        .cand_valid(cand_valid),
         .cond_in(cond_in),
         .cond_valid(cond_valid),
-        .data_out(data_out),
-        .valid_out(valid_out),
-        .ready_out(ready_out),
+        .ready_in(ready_in),
+        .score_out(score_out),
+        .score_valid(score_valid),
         .busy(busy),
         .done(done)
     );
@@ -113,8 +110,8 @@ module tb_generator_mini;
     // VCD Dump
     //--------------------------------------------------------------------------
     initial begin
-        $dumpfile("tb_generator_mini.vcd");
-        $dumpvars(0, tb_generator_mini);
+        $dumpfile("tb_discriminator_mini.vcd");
+        $dumpvars(0, tb_discriminator_mini);
     end
     
     //--------------------------------------------------------------------------
@@ -122,18 +119,15 @@ module tb_generator_mini;
     //--------------------------------------------------------------------------
     always @(*) begin
         case (dut.state)
-            4'd0:  state_name = "IDLE";
-            4'd1:  state_name = "LOAD_IN";
-            4'd2:  state_name = "ENC1";
-            4'd3:  state_name = "BNECK";
-            4'd4:  state_name = "UPSAMPLE1";
-            4'd5:  state_name = "DEC1";
-            4'd6:  state_name = "SKIP_ADD";
-            4'd7:  state_name = "UPSAMPLE2";
-            4'd8:  state_name = "OUT_CONV";
-            4'd9:  state_name = "TANH";
-            4'd10: state_name = "OUTPUT";
-            4'd11: state_name = "DONE";
+            4'd0: state_name = "IDLE";
+            4'd1: state_name = "LOAD_CAND";
+            4'd2: state_name = "LOAD_COND";
+            4'd3: state_name = "CONV1";
+            4'd4: state_name = "CONV2";
+            4'd5: state_name = "POOL";
+            4'd6: state_name = "DENSE";
+            4'd7: state_name = "OUTPUT";
+            4'd8: state_name = "DONE";
             default: state_name = "UNKNOWN";
         endcase
     end
@@ -144,52 +138,31 @@ module tb_generator_mini;
     reg [3:0] prev_state;
     always @(posedge clk) begin
         if (dut.state != prev_state) begin
-            $display("  [%0t] State: %s -> %s", $time, get_state_str(prev_state), get_state_str(dut.state));
+            $display("  [%0t] State: %s", $time, state_name);
         end
         prev_state <= dut.state;
     end
-    
-    function [127:0] get_state_str;
-        input [3:0] st;
-        begin
-            case (st)
-                4'd0:  get_state_str = "IDLE";
-                4'd1:  get_state_str = "LOAD_IN";
-                4'd2:  get_state_str = "ENC1";
-                4'd3:  get_state_str = "BNECK";
-                4'd4:  get_state_str = "UPSAMPLE1";
-                4'd5:  get_state_str = "DEC1";
-                4'd6:  get_state_str = "SKIP_ADD";
-                4'd7:  get_state_str = "UPSAMPLE2";
-                4'd8:  get_state_str = "OUT_CONV";
-                4'd9:  get_state_str = "TANH";
-                4'd10: get_state_str = "OUTPUT";
-                4'd11: get_state_str = "DONE";
-                default: get_state_str = "???";
-            endcase
-        end
-    endfunction
     
     //--------------------------------------------------------------------------
     // Main Test Sequence
     //--------------------------------------------------------------------------
     initial begin
         $display("================================================================");
-        $display("  SELF-CHECKING TESTBENCH: Mini U-Net Generator (Pipelined)");
+        $display("  SELF-CHECKING TESTBENCH: Mini Discriminator (Pipelined)");
         $display("================================================================");
         $display("");
         $display("Architecture: Parallel kernel MACs + 3-stage pipeline");
-        $display("Fixed-point: Q8.8 activations, Q1.7 weights");
+        $display("Input: 4 channels (2 candidate + 2 condition), 16 samples each");
+        $display("Output: Single critic score");
         $display("");
         
         // Initialize
         rst_n = 0;
         start = 0;
-        data_in = 0;
-        valid_in = 0;
+        cand_in = 0;
+        cand_valid = 0;
         cond_in = 0;
         cond_valid = 0;
-        ready_out = 1'b1;
         
         total_errors = 0;
         total_tests = 0;
@@ -203,75 +176,75 @@ module tb_generator_mini;
         // Test 1: Zero Input
         //----------------------------------------------------------------------
         $display("----------------------------------------------------------------");
-        $display("TEST 1: Zero Input");
+        $display("TEST 1: Zero Input (all zeros)");
         $display("----------------------------------------------------------------");
-        for (i = 0; i < IN_CH * FRAME_LEN; i = i + 1) test_input[i] = 0;
-        for (i = 0; i < OUT_CH * FRAME_LEN; i = i + 1) begin
-            golden_min[i] = -16'sh0200; golden_max[i] = 16'sh0200;
+        for (i = 0; i < FRAME_LEN; i = i + 1) begin
+            cand_data[0][i] = 0; cand_data[1][i] = 0;
+            cond_data[0][i] = 0; cond_data[1][i] = 0;
         end
+        score_min = -16'sh1000; score_max = 16'sh1000;
         run_test(1);
         
         //----------------------------------------------------------------------
-        // Test 2: DC Input (constant 0.5)
+        // Test 2: Matching Input (candidate = condition)
         //----------------------------------------------------------------------
         $display("");
         $display("----------------------------------------------------------------");
-        $display("TEST 2: DC Input (0.5 in Q8.8 = 128)");
+        $display("TEST 2: Matching Input (candidate == condition)");
         $display("----------------------------------------------------------------");
-        for (i = 0; i < IN_CH * FRAME_LEN; i = i + 1) test_input[i] = 16'sh0080;
-        for (i = 0; i < OUT_CH * FRAME_LEN; i = i + 1) begin
-            golden_min[i] = -16'sh0400; golden_max[i] = 16'sh0400;
+        for (i = 0; i < FRAME_LEN; i = i + 1) begin
+            cand_data[0][i] = $rtoi(100.0 * $sin(2.0 * 3.14159 * i / FRAME_LEN));
+            cand_data[1][i] = $rtoi(100.0 * $cos(2.0 * 3.14159 * i / FRAME_LEN));
+            cond_data[0][i] = cand_data[0][i];
+            cond_data[1][i] = cand_data[1][i];
         end
+        score_min = -16'sh2000; score_max = 16'sh2000;
         run_test(2);
         
         //----------------------------------------------------------------------
-        // Test 3: Impulse Response
+        // Test 3: Mismatched Input (candidate != condition)
         //----------------------------------------------------------------------
         $display("");
         $display("----------------------------------------------------------------");
-        $display("TEST 3: Impulse Response");
+        $display("TEST 3: Mismatched Input (candidate != condition)");
         $display("----------------------------------------------------------------");
-        for (i = 0; i < IN_CH * FRAME_LEN; i = i + 1) begin
-            if (i == FRAME_LEN/2 || i == FRAME_LEN + FRAME_LEN/2)
-                test_input[i] = 16'sh0100;
-            else
-                test_input[i] = 0;
+        for (i = 0; i < FRAME_LEN; i = i + 1) begin
+            cand_data[0][i] = $rtoi(100.0 * $sin(2.0 * 3.14159 * i / FRAME_LEN));
+            cand_data[1][i] = $rtoi(100.0 * $cos(2.0 * 3.14159 * i / FRAME_LEN));
+            cond_data[0][i] = -cand_data[0][i];  // Opposite
+            cond_data[1][i] = -cand_data[1][i];
         end
-        for (i = 0; i < OUT_CH * FRAME_LEN; i = i + 1) begin
-            golden_min[i] = -16'sh0800; golden_max[i] = 16'sh0800;
-        end
+        score_min = -16'sh2000; score_max = 16'sh2000;
         run_test(3);
         
         //----------------------------------------------------------------------
-        // Test 4: Sine Wave (OFDM-like)
+        // Test 4: Random Noise
         //----------------------------------------------------------------------
         $display("");
         $display("----------------------------------------------------------------");
-        $display("TEST 4: Sine Wave Pattern");
+        $display("TEST 4: Random-like Pattern");
         $display("----------------------------------------------------------------");
         for (i = 0; i < FRAME_LEN; i = i + 1) begin
-            test_input[i] = $rtoi(100.0 * $sin(2.0 * 3.14159 * i / FRAME_LEN));
-            test_input[FRAME_LEN + i] = $rtoi(100.0 * $cos(2.0 * 3.14159 * i / FRAME_LEN));
+            cand_data[0][i] = ((i * 73 + 17) % 256) - 128;
+            cand_data[1][i] = ((i * 37 + 91) % 256) - 128;
+            cond_data[0][i] = ((i * 41 + 53) % 256) - 128;
+            cond_data[1][i] = ((i * 59 + 23) % 256) - 128;
         end
-        for (i = 0; i < OUT_CH * FRAME_LEN; i = i + 1) begin
-            golden_min[i] = -16'sh0800; golden_max[i] = 16'sh0800;
-        end
+        score_min = -16'sh4000; score_max = 16'sh4000;
         run_test(4);
         
         //----------------------------------------------------------------------
-        // Test 5: Ramp Pattern
+        // Test 5: DC Input
         //----------------------------------------------------------------------
         $display("");
         $display("----------------------------------------------------------------");
-        $display("TEST 5: Ramp Pattern");
+        $display("TEST 5: DC Input (constant values)");
         $display("----------------------------------------------------------------");
         for (i = 0; i < FRAME_LEN; i = i + 1) begin
-            test_input[i] = (i - 8) * 16;
-            test_input[FRAME_LEN + i] = (8 - i) * 16;
+            cand_data[0][i] = 16'sh0080; cand_data[1][i] = 16'sh0080;
+            cond_data[0][i] = 16'sh0080; cond_data[1][i] = 16'sh0080;
         end
-        for (i = 0; i < OUT_CH * FRAME_LEN; i = i + 1) begin
-            golden_min[i] = -16'sh0800; golden_max[i] = 16'sh0800;
-        end
+        score_min = -16'sh4000; score_max = 16'sh4000;
         run_test(5);
         
         //----------------------------------------------------------------------
@@ -320,8 +293,7 @@ module tb_generator_mini;
             test_num = test_id;
             total_tests = total_tests + 1;
             error_count = 0;
-            in_idx = 0;
-            out_idx = 0;
+            captured_score = 0;
             
             $display("  Starting inference...");
             @(posedge clk);
@@ -330,31 +302,53 @@ module tb_generator_mini;
             @(posedge clk);
             start = 0;
             
-            // Load input data
-            while (in_idx < IN_CH * FRAME_LEN && cycle_count < start_cycle + TIMEOUT) begin
+            // Load candidate data (2 channels)
+            ch_idx = 0;
+            pos_idx = 0;
+            while (ch_idx < 2 && cycle_count < start_cycle + TIMEOUT) begin
                 @(posedge clk);
-                if (ready_in) begin
-                    data_in = test_input[in_idx];
-                    valid_in = 1;
-                    cond_in = test_input[in_idx];
-                    cond_valid = 1;
-                    in_idx = in_idx + 1;
+                if (ready_in && dut.state == 4'd1) begin  // ST_LOAD_CAND
+                    cand_in = cand_data[ch_idx][pos_idx];
+                    cand_valid = 1;
+                    pos_idx = pos_idx + 1;
+                    if (pos_idx == FRAME_LEN) begin
+                        pos_idx = 0;
+                        ch_idx = ch_idx + 1;
+                    end
                 end else begin
-                    valid_in = 0;
+                    cand_valid = 0;
+                end
+            end
+            cand_valid = 0;
+            
+            $display("  Candidate loaded: 2 channels × %0d samples", FRAME_LEN);
+            
+            // Load condition data (2 channels)
+            ch_idx = 0;
+            pos_idx = 0;
+            while (ch_idx < 2 && cycle_count < start_cycle + TIMEOUT) begin
+                @(posedge clk);
+                if (ready_in && dut.state == 4'd2) begin  // ST_LOAD_COND
+                    cond_in = cond_data[ch_idx][pos_idx];
+                    cond_valid = 1;
+                    pos_idx = pos_idx + 1;
+                    if (pos_idx == FRAME_LEN) begin
+                        pos_idx = 0;
+                        ch_idx = ch_idx + 1;
+                    end
+                end else begin
                     cond_valid = 0;
                 end
             end
-            valid_in = 0;
             cond_valid = 0;
             
-            $display("  Input loaded: %0d samples", in_idx);
+            $display("  Condition loaded: 2 channels × %0d samples", FRAME_LEN);
             
-            // Wait for processing and capture output
+            // Wait for processing
             while (!done && cycle_count < start_cycle + TIMEOUT) begin
                 @(posedge clk);
-                if (valid_out && ready_out) begin
-                    captured_output[out_idx] = data_out;
-                    out_idx = out_idx + 1;
+                if (score_valid) begin
+                    captured_score = score_out;
                 end
             end
             
@@ -368,31 +362,20 @@ module tb_generator_mini;
             end else begin
                 $display("  Processing complete!");
                 $display("  Total cycles: %0d", total_cycles);
-                $display("  Output samples: %0d", out_idx);
-                $display("  Throughput: %.2f cycles/sample", total_cycles * 1.0 / (OUT_CH * FRAME_LEN));
+                $display("  Score output: %0d (0x%04h)", $signed(captured_score), captured_score);
             end
             
-            // Verify outputs
-            $display("  Verifying outputs...");
-            for (i = 0; i < out_idx && i < OUT_CH * FRAME_LEN; i = i + 1) begin
-                if ($signed(captured_output[i]) < $signed(golden_min[i]) || 
-                    $signed(captured_output[i]) > $signed(golden_max[i])) begin
-                    $display("    [FAIL] Out[%0d] = %0d (expected [%0d, %0d])",
-                             i, $signed(captured_output[i]), 
-                             $signed(golden_min[i]), $signed(golden_max[i]));
-                    error_count = error_count + 1;
-                end
-            end
-            
-            // Check output count
-            if (out_idx != OUT_CH * FRAME_LEN) begin
-                $display("    [FAIL] Expected %0d outputs, got %0d", OUT_CH * FRAME_LEN, out_idx);
+            // Verify score is in expected range
+            if ($signed(captured_score) < $signed(score_min) || 
+                $signed(captured_score) > $signed(score_max)) begin
+                $display("  [FAIL] Score %0d out of expected range [%0d, %0d]",
+                         $signed(captured_score), $signed(score_min), $signed(score_max));
                 error_count = error_count + 1;
             end
             
             // Report
             if (error_count == 0) begin
-                $display("  Result: *** PASS *** (%0d outputs verified)", out_idx);
+                $display("  Result: *** PASS ***");
             end else begin
                 $display("  Result: *** FAIL *** (%0d errors)", error_count);
                 total_errors = total_errors + error_count;

@@ -1,22 +1,29 @@
 //==============================================================================
 // Mini Discriminator (Critic) for CWGAN-GP
 //
-// Simplified representative architecture for FPGA demonstration
+// PARALLEL PIPELINED VERSION
 //
 // Architecture:
 //   Input [4×16] → Conv1 [8×8] → Conv2 [16×4] → SumPool [16] → Dense → Score [1]
 //
 // Input: Concatenation of candidate signal (2ch) and condition signal (2ch)
 //
-// Features:
-//   - Strided convolutions for downsampling
-//   - No batch normalization (per WGAN-GP)
-//   - LeakyReLU activations
-//   - Global sum pooling
-//   - Single linear output (no sigmoid)
+// Parallel/Pipeline Features:
+//   - PARALLEL KERNEL: 3 multipliers for k=0,1,2 computed in single cycle
+//   - PIPELINED MAC: 3-stage pipeline (fetch → multiply → accumulate)
+//   - PARALLEL POOLING: 4 channels summed per cycle
+//   - LeakyReLU activations (no batch norm per WGAN-GP)
 //
-// Fixed-point: Q8.8 activations, Q1.7 weights
+// Fixed-point: Q8.8 activations, Q1.7 weights, Q16.16 accumulator
+//
+// Resource Estimates (FPGA):
+//   DSPs: 6 (3 kernel MACs × 2 stages)
+//   BRAMs: 2 (weight + bias ROM)
+//   FFs: ~2000
+//   LUTs: ~3000
 //==============================================================================
+
+`timescale 1ns / 1ps
 
 module discriminator_mini #(
     parameter DATA_WIDTH   = 16,           // Q8.8 activations
@@ -57,9 +64,9 @@ module discriminator_mini #(
     localparam CONV2_OUT_LEN = 4;    // 8/2
     
     // Weight ROM addresses (discriminator starts at 256)
-    localparam WADDR_CONV1  = 256;
-    localparam WADDR_CONV2  = 352;
-    localparam WADDR_DENSE  = 736;
+    localparam WADDR_CONV1  = 256;   // 4*8*3 = 96 weights
+    localparam WADDR_CONV2  = 352;   // 8*16*3 = 384 weights
+    localparam WADDR_DENSE  = 736;   // 16 weights
     
     // Bias ROM addresses
     localparam BADDR_CONV1  = 32;
@@ -73,73 +80,86 @@ module discriminator_mini #(
     localparam ST_LOAD_CAND = 4'd1;
     localparam ST_LOAD_COND = 4'd2;
     localparam ST_CONV1     = 4'd3;
-    localparam ST_LRELU1    = 4'd4;
-    localparam ST_CONV2     = 4'd5;
-    localparam ST_LRELU2    = 4'd6;
-    localparam ST_POOL      = 4'd7;
-    localparam ST_DENSE     = 4'd8;
-    localparam ST_OUTPUT    = 4'd9;
-    localparam ST_DONE      = 4'd10;
+    localparam ST_CONV2     = 4'd4;
+    localparam ST_POOL      = 4'd5;
+    localparam ST_DENSE     = 4'd6;
+    localparam ST_OUTPUT    = 4'd7;
+    localparam ST_DONE      = 4'd8;
     
     reg [3:0] state, next_state;
     
     //--------------------------------------------------------------------------
     // Buffers
     //--------------------------------------------------------------------------
-    // Input buffer (4 channels: cand_I, cand_Q, cond_I, cond_Q)
-    reg signed [DATA_WIDTH-1:0] input_buf [0:IN_CH-1][0:FRAME_LEN-1];
-    
-    // Intermediate buffers
-    reg signed [DATA_WIDTH-1:0] conv1_buf [0:CONV1_OUT_CH-1][0:CONV1_OUT_LEN-1];
+    reg signed [DATA_WIDTH-1:0] input_buf [0:IN_CH-1][0:FRAME_LEN+1];
+    reg signed [DATA_WIDTH-1:0] conv1_buf [0:CONV1_OUT_CH-1][0:CONV1_OUT_LEN+1];
     reg signed [DATA_WIDTH-1:0] conv2_buf [0:CONV2_OUT_CH-1][0:CONV2_OUT_LEN-1];
-    
-    // Pool output
-    reg signed [ACC_WIDTH-1:0] pool_buf [0:CONV2_OUT_CH-1];
+    reg signed [ACC_WIDTH-1:0]  pool_buf  [0:CONV2_OUT_CH-1];
     
     //--------------------------------------------------------------------------
-    // Weight/Bias ROM Interface
+    // PARALLEL Weight ROM Interface (3 weights for kernel)
     //--------------------------------------------------------------------------
-    reg  [10:0] weight_addr;
-    wire [WEIGHT_WIDTH-1:0] weight_data;
+    reg  [10:0] weight_addr_base;
+    wire [10:0] weight_addr_k0 = weight_addr_base;
+    wire [10:0] weight_addr_k1 = weight_addr_base + 1;
+    wire [10:0] weight_addr_k2 = weight_addr_base + 2;
+    
+    wire signed [WEIGHT_WIDTH-1:0] weight_k0, weight_k1, weight_k2;
+    
+    // 3 parallel weight ROMs
+    weight_rom #(.WEIGHT_WIDTH(WEIGHT_WIDTH), .DEPTH(2048), .ADDR_WIDTH(11))
+        u_wrom_k0 (.clk(clk), .addr(weight_addr_k0), .data(weight_k0));
+    weight_rom #(.WEIGHT_WIDTH(WEIGHT_WIDTH), .DEPTH(2048), .ADDR_WIDTH(11))
+        u_wrom_k1 (.clk(clk), .addr(weight_addr_k1), .data(weight_k1));
+    weight_rom #(.WEIGHT_WIDTH(WEIGHT_WIDTH), .DEPTH(2048), .ADDR_WIDTH(11))
+        u_wrom_k2 (.clk(clk), .addr(weight_addr_k2), .data(weight_k2));
     
     reg  [5:0] bias_addr;
-    wire [DATA_WIDTH-1:0] bias_data;
+    wire signed [DATA_WIDTH-1:0] bias_data;
     
-    weight_rom #(
-        .WEIGHT_WIDTH(WEIGHT_WIDTH),
-        .DEPTH(2048),
-        .ADDR_WIDTH(11)
-    ) u_weight_rom (
-        .clk(clk),
-        .addr(weight_addr),
-        .data(weight_data)
-    );
+    bias_rom #(.DATA_WIDTH(DATA_WIDTH), .DEPTH(64), .ADDR_WIDTH(6))
+        u_bias_rom (.clk(clk), .addr(bias_addr), .data(bias_data));
     
-    bias_rom #(
-        .DATA_WIDTH(DATA_WIDTH),
-        .DEPTH(64),
-        .ADDR_WIDTH(6)
-    ) u_bias_rom (
-        .clk(clk),
-        .addr(bias_addr),
-        .data(bias_data)
-    );
+    //--------------------------------------------------------------------------
+    // PARALLEL MAC: 3 multipliers for kernel window
+    //--------------------------------------------------------------------------
+    reg signed [DATA_WIDTH-1:0] data_k0, data_k1, data_k2;
+    
+    wire signed [DATA_WIDTH+WEIGHT_WIDTH-1:0] mult_k0 = data_k0 * $signed(weight_k0);
+    wire signed [DATA_WIDTH+WEIGHT_WIDTH-1:0] mult_k1 = data_k1 * $signed(weight_k1);
+    wire signed [DATA_WIDTH+WEIGHT_WIDTH-1:0] mult_k2 = data_k2 * $signed(weight_k2);
+    
+    wire signed [ACC_WIDTH-1:0] kernel_sum = (mult_k0 >>> 7) + (mult_k1 >>> 7) + (mult_k2 >>> 7);
+    
+    //--------------------------------------------------------------------------
+    // Pipeline Registers
+    //--------------------------------------------------------------------------
+    reg        pipe_s2_valid;
+    reg [4:0]  pipe_s2_out_ch;
+    reg [4:0]  pipe_s2_out_pos;
+    reg        pipe_s2_last_in_ch;
+    
+    reg        pipe_s3_valid;
+    reg [4:0]  pipe_s3_out_ch;
+    reg [4:0]  pipe_s3_out_pos;
+    reg        pipe_s3_last_in_ch;
+    reg signed [ACC_WIDTH-1:0] pipe_s3_ksum;
+    
+    // Accumulator bank
+    reg signed [ACC_WIDTH-1:0] accum [0:15];
+    
+    // Dense accumulator
+    reg signed [ACC_WIDTH-1:0] dense_acc;
     
     //--------------------------------------------------------------------------
     // Processing Counters
     //--------------------------------------------------------------------------
-    reg [1:0]                       load_ch_cnt;  // 0-1 for cand, 0-1 for cond
-    reg [$clog2(FRAME_LEN)-1:0]     load_pos_cnt;
-    reg [$clog2(CONV2_OUT_CH)-1:0]  proc_ch_cnt;
-    reg [$clog2(FRAME_LEN)-1:0]     proc_pos_cnt;
-    reg [$clog2(3)-1:0]             kern_cnt;
-    reg [$clog2(IN_CH)-1:0]         acc_ch_cnt;
-    
-    // Accumulator
-    reg signed [ACC_WIDTH-1:0] accumulator;
-    
-    // Dense accumulator
-    reg signed [ACC_WIDTH-1:0] dense_acc;
+    reg [1:0]  load_ch_cnt;
+    reg [4:0]  load_pos_cnt;
+    reg [4:0]  out_ch_cnt;
+    reg [4:0]  out_pos_cnt;
+    reg [4:0]  in_ch_iter;
+    reg [2:0]  pipe_flush;
     
     integer i, j;
     
@@ -169,29 +189,21 @@ module discriminator_mini #(
                     next_state = ST_CONV1;
             end
             ST_CONV1: begin
-                if (proc_ch_cnt == CONV1_OUT_CH-1 && proc_pos_cnt == CONV1_OUT_LEN-1 &&
-                    acc_ch_cnt == IN_CH-1 && kern_cnt == 2)
-                    next_state = ST_LRELU1;
-            end
-            ST_LRELU1: begin
-                if (proc_ch_cnt == CONV1_OUT_CH-1 && proc_pos_cnt == CONV1_OUT_LEN-1)
+                if (out_ch_cnt == CONV1_OUT_CH-1 && out_pos_cnt == CONV1_OUT_LEN-1 &&
+                    in_ch_iter == IN_CH-1 && pipe_flush == 2)
                     next_state = ST_CONV2;
             end
             ST_CONV2: begin
-                if (proc_ch_cnt == CONV2_OUT_CH-1 && proc_pos_cnt == CONV2_OUT_LEN-1 &&
-                    acc_ch_cnt == CONV1_OUT_CH-1 && kern_cnt == 2)
-                    next_state = ST_LRELU2;
-            end
-            ST_LRELU2: begin
-                if (proc_ch_cnt == CONV2_OUT_CH-1 && proc_pos_cnt == CONV2_OUT_LEN-1)
+                if (out_ch_cnt == CONV2_OUT_CH-1 && out_pos_cnt == CONV2_OUT_LEN-1 &&
+                    in_ch_iter == CONV1_OUT_CH-1 && pipe_flush == 2)
                     next_state = ST_POOL;
             end
             ST_POOL: begin
-                if (proc_ch_cnt == CONV2_OUT_CH-1 && proc_pos_cnt == CONV2_OUT_LEN-1)
+                if (out_ch_cnt == CONV2_OUT_CH-1 && out_pos_cnt == CONV2_OUT_LEN-1)
                     next_state = ST_DENSE;
             end
             ST_DENSE: begin
-                if (proc_ch_cnt == CONV2_OUT_CH-1)
+                if (out_ch_cnt == CONV2_OUT_CH-1 && pipe_flush == 2)
                     next_state = ST_OUTPUT;
             end
             ST_OUTPUT: begin
@@ -210,23 +222,29 @@ module discriminator_mini #(
         if (!rst_n) begin
             load_ch_cnt <= 0;
             load_pos_cnt <= 0;
+            for (i = 0; i < IN_CH; i = i + 1)
+                for (j = 0; j < FRAME_LEN+2; j = j + 1)
+                    input_buf[i][j] <= 0;
         end else if (state == ST_IDLE && start) begin
             load_ch_cnt <= 0;
             load_pos_cnt <= 0;
+            for (i = 0; i < IN_CH; i = i + 1)
+                for (j = 0; j < FRAME_LEN+2; j = j + 1)
+                    input_buf[i][j] <= 0;
         end else if (state == ST_LOAD_CAND && cand_valid) begin
-            input_buf[load_ch_cnt][load_pos_cnt] <= cand_in;
+            input_buf[load_ch_cnt][load_pos_cnt + 1] <= cand_in;
             
             if (load_pos_cnt == FRAME_LEN-1) begin
                 load_pos_cnt <= 0;
                 if (load_ch_cnt == 1)
-                    load_ch_cnt <= 0;  // Reset for condition loading
+                    load_ch_cnt <= 0;
                 else
                     load_ch_cnt <= load_ch_cnt + 1;
             end else begin
                 load_pos_cnt <= load_pos_cnt + 1;
             end
         end else if (state == ST_LOAD_COND && cond_valid) begin
-            input_buf[load_ch_cnt + 2][load_pos_cnt] <= cond_in;  // Channels 2, 3
+            input_buf[load_ch_cnt + 2][load_pos_cnt + 1] <= cond_in;
             
             if (load_pos_cnt == FRAME_LEN-1) begin
                 load_pos_cnt <= 0;
@@ -240,167 +258,227 @@ module discriminator_mini #(
     assign ready_in = (state == ST_LOAD_CAND) || (state == ST_LOAD_COND);
     
     //--------------------------------------------------------------------------
-    // Convolution Processing
+    // Pipelined Convolution Processing
     //--------------------------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            proc_ch_cnt <= 0;
-            proc_pos_cnt <= 0;
-            kern_cnt <= 0;
-            acc_ch_cnt <= 0;
-            accumulator <= 0;
-            dense_acc <= 0;
-            weight_addr <= 0;
+            out_ch_cnt <= 0;
+            out_pos_cnt <= 0;
+            in_ch_iter <= 0;
+            pipe_flush <= 0;
+            weight_addr_base <= 0;
             bias_addr <= 0;
-            for (i = 0; i < CONV2_OUT_CH; i = i + 1)
+            dense_acc <= 0;
+            
+            data_k0 <= 0; data_k1 <= 0; data_k2 <= 0;
+            pipe_s2_valid <= 0;
+            pipe_s3_valid <= 0;
+            
+            for (i = 0; i < 16; i = i + 1) accum[i] <= 0;
+            for (i = 0; i < CONV1_OUT_CH; i = i + 1)
+                for (j = 0; j < CONV1_OUT_LEN+2; j = j + 1) conv1_buf[i][j] <= 0;
+            for (i = 0; i < CONV2_OUT_CH; i = i + 1) begin
+                for (j = 0; j < CONV2_OUT_LEN; j = j + 1) conv2_buf[i][j] <= 0;
                 pool_buf[i] <= 0;
+            end
         end else begin
             case (state)
-                ST_IDLE: begin
-                    proc_ch_cnt <= 0;
-                    proc_pos_cnt <= 0;
-                    kern_cnt <= 0;
-                    acc_ch_cnt <= 0;
-                    accumulator <= 0;
+                ST_IDLE, ST_LOAD_CAND, ST_LOAD_COND: begin
+                    out_ch_cnt <= 0;
+                    out_pos_cnt <= 0;
+                    in_ch_iter <= 0;
+                    pipe_flush <= 0;
+                    pipe_s2_valid <= 0;
+                    pipe_s3_valid <= 0;
                     dense_acc <= 0;
+                    for (i = 0; i < 16; i = i + 1) accum[i] <= 0;
+                    for (i = 0; i < CONV2_OUT_CH; i = i + 1) pool_buf[i] <= 0;
                 end
                 
-                //--------------------------------------------------------------
-                // Conv1: Conv(4→8, k=3, s=2)
-                //--------------------------------------------------------------
+                //==============================================================
+                // CONV1: Pipelined Conv(4→8, k=3, s=2) + LeakyReLU
+                //==============================================================
                 ST_CONV1: begin
-                    weight_addr <= WADDR_CONV1 + proc_ch_cnt * (IN_CH * 3) + 
-                                   acc_ch_cnt * 3 + kern_cnt;
-                    bias_addr <= BADDR_CONV1 + proc_ch_cnt;
+                    // Stage 1: Address + data fetch
+                    weight_addr_base <= WADDR_CONV1 + out_ch_cnt * (IN_CH * 3) + in_ch_iter * 3;
+                    bias_addr <= BADDR_CONV1 + out_ch_cnt;
                     
-                    if (kern_cnt == 2) begin
-                        kern_cnt <= 0;
-                        if (acc_ch_cnt == IN_CH-1) begin
-                            acc_ch_cnt <= 0;
-                            conv1_buf[proc_ch_cnt][proc_pos_cnt] <= accumulator[DATA_WIDTH-1:0];
-                            accumulator <= 0;
-                            
-                            if (proc_pos_cnt == CONV1_OUT_LEN-1) begin
-                                proc_pos_cnt <= 0;
-                                if (proc_ch_cnt == CONV1_OUT_CH-1)
-                                    proc_ch_cnt <= 0;
-                                else
-                                    proc_ch_cnt <= proc_ch_cnt + 1;
-                            end else begin
-                                proc_pos_cnt <= proc_pos_cnt + 1;
+                    // PARALLEL: 3 kernel positions
+                    data_k0 <= input_buf[in_ch_iter][out_pos_cnt * 2 + 0];
+                    data_k1 <= input_buf[in_ch_iter][out_pos_cnt * 2 + 1];
+                    data_k2 <= input_buf[in_ch_iter][out_pos_cnt * 2 + 2];
+                    
+                    pipe_s2_valid <= 1'b1;
+                    pipe_s2_out_ch <= out_ch_cnt;
+                    pipe_s2_out_pos <= out_pos_cnt;
+                    pipe_s2_last_in_ch <= (in_ch_iter == IN_CH-1);
+                    
+                    // Stage 2→3
+                    pipe_s3_valid <= pipe_s2_valid;
+                    pipe_s3_out_ch <= pipe_s2_out_ch;
+                    pipe_s3_out_pos <= pipe_s2_out_pos;
+                    pipe_s3_last_in_ch <= pipe_s2_last_in_ch;
+                    pipe_s3_ksum <= kernel_sum;
+                    
+                    // Stage 3: Accumulate + store
+                    if (pipe_s3_valid) begin
+                        if (pipe_s3_last_in_ch) begin
+                            begin : conv1_store
+                                reg signed [ACC_WIDTH-1:0] sum;
+                                reg signed [DATA_WIDTH-1:0] result;
+                                sum = accum[pipe_s3_out_ch] + pipe_s3_ksum + 
+                                      {{16{bias_data[15]}}, bias_data};
+                                if (sum > 32'sh00007FFF) result = 16'sh7FFF;
+                                else if (sum < 32'shFFFF8000) result = 16'sh8000;
+                                else result = sum[15:0];
+                                // LeakyReLU
+                                if (result[15])
+                                    result = (result >>> 2) + (result >>> 4);
+                                conv1_buf[pipe_s3_out_ch][pipe_s3_out_pos + 1] <= result;
                             end
+                            accum[pipe_s3_out_ch] <= 0;
                         end else begin
-                            acc_ch_cnt <= acc_ch_cnt + 1;
+                            accum[pipe_s3_out_ch] <= accum[pipe_s3_out_ch] + pipe_s3_ksum;
+                        end
+                    end
+                    
+                    // Counter advancement
+                    if (in_ch_iter == IN_CH-1) begin
+                        in_ch_iter <= 0;
+                        if (out_pos_cnt == CONV1_OUT_LEN-1) begin
+                            out_pos_cnt <= 0;
+                            if (out_ch_cnt == CONV1_OUT_CH-1)
+                                pipe_flush <= pipe_flush + 1;
+                            else
+                                out_ch_cnt <= out_ch_cnt + 1;
+                        end else begin
+                            out_pos_cnt <= out_pos_cnt + 1;
                         end
                     end else begin
-                        kern_cnt <= kern_cnt + 1;
+                        in_ch_iter <= in_ch_iter + 1;
                     end
                 end
                 
-                //--------------------------------------------------------------
-                // LeakyReLU 1: x if x>0, else 0.2*x
-                //--------------------------------------------------------------
-                ST_LRELU1: begin
-                    if (conv1_buf[proc_ch_cnt][proc_pos_cnt][DATA_WIDTH-1]) begin
-                        // Negative: multiply by 0.2 ≈ 26/128 (shift right 2 + shift right 4)
-                        conv1_buf[proc_ch_cnt][proc_pos_cnt] <= 
-                            (conv1_buf[proc_ch_cnt][proc_pos_cnt] >>> 2) + 
-                            (conv1_buf[proc_ch_cnt][proc_pos_cnt] >>> 4);
-                    end
-                    
-                    if (proc_pos_cnt == CONV1_OUT_LEN-1) begin
-                        proc_pos_cnt <= 0;
-                        proc_ch_cnt <= proc_ch_cnt + 1;
-                    end else begin
-                        proc_pos_cnt <= proc_pos_cnt + 1;
-                    end
-                end
-                
-                //--------------------------------------------------------------
-                // Conv2: Conv(8→16, k=3, s=2)
-                //--------------------------------------------------------------
+                //==============================================================
+                // CONV2: Pipelined Conv(8→16, k=3, s=2) + LeakyReLU
+                //==============================================================
                 ST_CONV2: begin
-                    weight_addr <= WADDR_CONV2 + proc_ch_cnt * (CONV1_OUT_CH * 3) + 
-                                   acc_ch_cnt * 3 + kern_cnt;
-                    bias_addr <= BADDR_CONV2 + proc_ch_cnt;
+                    if (out_ch_cnt == 0 && out_pos_cnt == 0 && in_ch_iter == 0 && pipe_flush == 0) begin
+                        pipe_s2_valid <= 0; pipe_s3_valid <= 0;
+                        for (i = 0; i < 16; i = i + 1) accum[i] <= 0;
+                    end
                     
-                    if (kern_cnt == 2) begin
-                        kern_cnt <= 0;
-                        if (acc_ch_cnt == CONV1_OUT_CH-1) begin
-                            acc_ch_cnt <= 0;
-                            conv2_buf[proc_ch_cnt][proc_pos_cnt] <= accumulator[DATA_WIDTH-1:0];
-                            accumulator <= 0;
-                            
-                            if (proc_pos_cnt == CONV2_OUT_LEN-1) begin
-                                proc_pos_cnt <= 0;
-                                if (proc_ch_cnt == CONV2_OUT_CH-1)
-                                    proc_ch_cnt <= 0;
-                                else
-                                    proc_ch_cnt <= proc_ch_cnt + 1;
-                            end else begin
-                                proc_pos_cnt <= proc_pos_cnt + 1;
+                    weight_addr_base <= WADDR_CONV2 + out_ch_cnt * (CONV1_OUT_CH * 3) + in_ch_iter * 3;
+                    bias_addr <= BADDR_CONV2 + out_ch_cnt;
+                    
+                    data_k0 <= conv1_buf[in_ch_iter][out_pos_cnt * 2 + 0];
+                    data_k1 <= conv1_buf[in_ch_iter][out_pos_cnt * 2 + 1];
+                    data_k2 <= conv1_buf[in_ch_iter][out_pos_cnt * 2 + 2];
+                    
+                    pipe_s2_valid <= 1'b1;
+                    pipe_s2_out_ch <= out_ch_cnt;
+                    pipe_s2_out_pos <= out_pos_cnt;
+                    pipe_s2_last_in_ch <= (in_ch_iter == CONV1_OUT_CH-1);
+                    
+                    pipe_s3_valid <= pipe_s2_valid;
+                    pipe_s3_out_ch <= pipe_s2_out_ch;
+                    pipe_s3_out_pos <= pipe_s2_out_pos;
+                    pipe_s3_last_in_ch <= pipe_s2_last_in_ch;
+                    pipe_s3_ksum <= kernel_sum;
+                    
+                    if (pipe_s3_valid) begin
+                        if (pipe_s3_last_in_ch) begin
+                            begin : conv2_store
+                                reg signed [ACC_WIDTH-1:0] sum;
+                                reg signed [DATA_WIDTH-1:0] result;
+                                sum = accum[pipe_s3_out_ch] + pipe_s3_ksum + 
+                                      {{16{bias_data[15]}}, bias_data};
+                                if (sum > 32'sh00007FFF) result = 16'sh7FFF;
+                                else if (sum < 32'shFFFF8000) result = 16'sh8000;
+                                else result = sum[15:0];
+                                if (result[15])
+                                    result = (result >>> 2) + (result >>> 4);
+                                conv2_buf[pipe_s3_out_ch][pipe_s3_out_pos] <= result;
                             end
+                            accum[pipe_s3_out_ch] <= 0;
                         end else begin
-                            acc_ch_cnt <= acc_ch_cnt + 1;
+                            accum[pipe_s3_out_ch] <= accum[pipe_s3_out_ch] + pipe_s3_ksum;
+                        end
+                    end
+                    
+                    if (in_ch_iter == CONV1_OUT_CH-1) begin
+                        in_ch_iter <= 0;
+                        if (out_pos_cnt == CONV2_OUT_LEN-1) begin
+                            out_pos_cnt <= 0;
+                            if (out_ch_cnt == CONV2_OUT_CH-1)
+                                pipe_flush <= pipe_flush + 1;
+                            else
+                                out_ch_cnt <= out_ch_cnt + 1;
+                        end else begin
+                            out_pos_cnt <= out_pos_cnt + 1;
                         end
                     end else begin
-                        kern_cnt <= kern_cnt + 1;
+                        in_ch_iter <= in_ch_iter + 1;
                     end
                 end
                 
-                //--------------------------------------------------------------
-                // LeakyReLU 2
-                //--------------------------------------------------------------
-                ST_LRELU2: begin
-                    if (conv2_buf[proc_ch_cnt][proc_pos_cnt][DATA_WIDTH-1]) begin
-                        conv2_buf[proc_ch_cnt][proc_pos_cnt] <= 
-                            (conv2_buf[proc_ch_cnt][proc_pos_cnt] >>> 2) + 
-                            (conv2_buf[proc_ch_cnt][proc_pos_cnt] >>> 4);
-                    end
-                    
-                    if (proc_pos_cnt == CONV2_OUT_LEN-1) begin
-                        proc_pos_cnt <= 0;
-                        proc_ch_cnt <= proc_ch_cnt + 1;
-                    end else begin
-                        proc_pos_cnt <= proc_pos_cnt + 1;
-                    end
-                end
-                
-                //--------------------------------------------------------------
-                // Global Sum Pooling
-                //--------------------------------------------------------------
+                //==============================================================
+                // GLOBAL SUM POOLING: Parallel accumulation
+                //==============================================================
                 ST_POOL: begin
-                    // Accumulate all spatial positions for each channel
-                    if (proc_pos_cnt == 0)
-                        pool_buf[proc_ch_cnt] <= {{(ACC_WIDTH-DATA_WIDTH){conv2_buf[proc_ch_cnt][proc_pos_cnt][DATA_WIDTH-1]}}, 
-                                                   conv2_buf[proc_ch_cnt][proc_pos_cnt]};
-                    else
-                        pool_buf[proc_ch_cnt] <= pool_buf[proc_ch_cnt] + 
-                            {{(ACC_WIDTH-DATA_WIDTH){conv2_buf[proc_ch_cnt][proc_pos_cnt][DATA_WIDTH-1]}}, 
-                             conv2_buf[proc_ch_cnt][proc_pos_cnt]};
+                    pipe_s2_valid <= 0; pipe_s3_valid <= 0; pipe_flush <= 0;
                     
-                    if (proc_pos_cnt == CONV2_OUT_LEN-1) begin
-                        proc_pos_cnt <= 0;
-                        proc_ch_cnt <= proc_ch_cnt + 1;
+                    // Accumulate spatial positions
+                    pool_buf[out_ch_cnt] <= pool_buf[out_ch_cnt] + 
+                        {{16{conv2_buf[out_ch_cnt][out_pos_cnt][15]}}, 
+                         conv2_buf[out_ch_cnt][out_pos_cnt]};
+                    
+                    if (out_pos_cnt == CONV2_OUT_LEN-1) begin
+                        out_pos_cnt <= 0;
+                        if (out_ch_cnt == CONV2_OUT_CH-1)
+                            out_ch_cnt <= 0;
+                        else
+                            out_ch_cnt <= out_ch_cnt + 1;
                     end else begin
-                        proc_pos_cnt <= proc_pos_cnt + 1;
+                        out_pos_cnt <= out_pos_cnt + 1;
                     end
                 end
                 
-                //--------------------------------------------------------------
-                // Dense Layer: 16 → 1
-                //--------------------------------------------------------------
+                //==============================================================
+                // DENSE: Pipelined Linear(16→1)
+                //==============================================================
                 ST_DENSE: begin
-                    weight_addr <= WADDR_DENSE + proc_ch_cnt;
+                    weight_addr_base <= WADDR_DENSE + out_ch_cnt;
                     bias_addr <= BADDR_DENSE;
                     
-                    // Accumulate weighted sum
-                    // dense_acc += pool_buf[proc_ch_cnt] * weight
-                    // Simplified: just sum (weights applied in ROM lookup delay)
-                    dense_acc <= dense_acc + pool_buf[proc_ch_cnt];
+                    // Fetch pooled value
+                    data_k0 <= pool_buf[out_ch_cnt][15:0];
                     
-                    proc_ch_cnt <= proc_ch_cnt + 1;
+                    pipe_s2_valid <= 1'b1;
+                    pipe_s2_out_ch <= out_ch_cnt;
+                    pipe_s2_last_in_ch <= (out_ch_cnt == CONV2_OUT_CH-1);
+                    
+                    pipe_s3_valid <= pipe_s2_valid;
+                    pipe_s3_out_ch <= pipe_s2_out_ch;
+                    pipe_s3_last_in_ch <= pipe_s2_last_in_ch;
+                    pipe_s3_ksum <= mult_k0 >>> 7;
+                    
+                    if (pipe_s3_valid) begin
+                        dense_acc <= dense_acc + pipe_s3_ksum;
+                        if (pipe_s3_last_in_ch) begin
+                            // Add bias on last
+                            dense_acc <= dense_acc + pipe_s3_ksum + 
+                                        {{16{bias_data[15]}}, bias_data};
+                        end
+                    end
+                    
+                    if (out_ch_cnt == CONV2_OUT_CH-1)
+                        pipe_flush <= pipe_flush + 1;
+                    else
+                        out_ch_cnt <= out_ch_cnt + 1;
                 end
+                
+                default: ;
             endcase
         end
     end

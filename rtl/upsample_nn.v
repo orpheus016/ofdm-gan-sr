@@ -10,6 +10,8 @@
 // Architecture: Memory-efficient streaming design
 //==============================================================================
 
+`timescale 1ns / 1ps
+
 module upsample_nn #(
     parameter DATA_WIDTH = 16,             // Q8.8 format
     parameter CHANNELS   = 4,              // Number of channels

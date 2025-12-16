@@ -9,6 +9,8 @@
 // Architecture: Purely combinational with pipelined option
 //==============================================================================
 
+`timescale 1ns / 1ps
+
 module activation_lrelu #(
     parameter DATA_WIDTH = 16,             // Q8.8 format
     parameter ALPHA_BITS = 8,              // Alpha precision

@@ -13,6 +13,8 @@
 // Fixed-Point: Q8.8 (16-bit signed)
 //==============================================================================
 
+`timescale 1ns / 1ps
+
 module activation_tanh #(
     parameter DATA_WIDTH = 16,             // Q8.8 format
     parameter USE_LUT    = 1,              // 0: PLAN approx, 1: LUT

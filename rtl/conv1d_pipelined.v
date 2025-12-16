@@ -20,6 +20,8 @@
 // Fixed-Point: Q8.8 activations, Q1.7 weights, Q16.16 accumulator
 //==============================================================================
 
+`timescale 1ns / 1ps
+
 module conv1d_pipelined #(
     parameter DATA_WIDTH    = 16,          // Activation bits (Q8.8)
     parameter WEIGHT_WIDTH  = 8,           // Weight bits (Q1.7)

@@ -14,6 +14,8 @@
 // Fixed-Point: Q8.8 activations, Q1.7 weights
 //==============================================================================
 
+`timescale 1ns / 1ps
+
 module cwgan_gp_top #(
     parameter DATA_WIDTH   = 16,           // Q8.8 activations
     parameter WEIGHT_WIDTH = 8,            // Q1.7 weights

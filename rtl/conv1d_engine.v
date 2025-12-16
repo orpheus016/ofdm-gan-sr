@@ -1,8 +1,8 @@
 //==============================================================================
 // CWGAN-GP for OFDM Signal Reconstruction - Conv1D Engine
-// 
+//
 // Pipelined 1D Convolution with Parallel MACs
-// 
+//
 // Architecture: Fully pipelined with configurable parallelism
 // - Supports variable kernel size (1, 3, 5, 7)
 // - Configurable input/output channels
@@ -12,7 +12,9 @@
 // Fixed-Point: Q8.8 activations, Q1.7 weights, Q16.16 accumulator
 //==============================================================================
 
-module conv1d_engine #(
+`timescale 1ns / 1ps
+
+module conv1d_engine#(
     parameter DATA_WIDTH    = 16,          // Activation bits (Q8.8)
     parameter WEIGHT_WIDTH  = 8,           // Weight bits (Q1.7)
     parameter ACC_WIDTH     = 32,          // Accumulator bits (Q16.16)

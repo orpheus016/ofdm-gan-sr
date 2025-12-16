@@ -9,6 +9,8 @@
 // Architecture: Streaming accumulator
 //==============================================================================
 
+`timescale 1ns / 1ps
+
 module sum_pool #(
     parameter DATA_WIDTH = 16,             // Q8.8 format
     parameter ACC_WIDTH  = 32,             // Q16.16 for accumulation

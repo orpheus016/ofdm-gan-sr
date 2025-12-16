@@ -7,6 +7,8 @@
 // Fixed-Point: Q1.7 (8-bit signed weights)
 //==============================================================================
 
+`timescale 1ns / 1ps
+
 module weight_rom #(
     parameter WEIGHT_WIDTH = 8,            // Q1.7 format
     parameter DEPTH        = 2048,         // Total weight storage

@@ -48,12 +48,15 @@ FULL_SRC = \
 
 # Testbenches
 TB_GEN = tb_generator_mini.v
+TB_SELFCHECK = tb_generator_selfcheck.v
 TB_FULL = tb_cwgan_gp.v
 
 # Output files
 VVP_GEN = tb_generator_mini.vvp
+VVP_SELFCHECK = tb_generator_selfcheck.vvp
 VVP_FULL = tb_cwgan_gp.vvp
 VCD_GEN = tb_generator_mini.vcd
+VCD_SELFCHECK = tb_generator_selfcheck.vcd
 VCD_FULL = tb_cwgan_gp.vcd
 
 # Iverilog flags
@@ -63,7 +66,7 @@ IVFLAGS = -g2012 -Wall
 # Simulation Targets
 # ==============================================================================
 
-.PHONY: all sim_gen sim_full sim_all wave_gen wave_full clean lint
+.PHONY: all sim_gen sim_selfcheck sim_full sim_all wave_gen wave_selfcheck wave_full clean lint
 
 all: sim_all
 
@@ -77,6 +80,16 @@ $(VVP_GEN): $(GEN_SRC) $(TB_GEN)
 $(VCD_GEN): $(VVP_GEN)
 	$(VVP) $<
 
+# Self-checking testbench simulation
+sim_selfcheck: $(VCD_SELFCHECK)
+	@echo "Self-checking simulation complete. View with: make wave_selfcheck"
+
+$(VVP_SELFCHECK): $(GEN_SRC) $(TB_SELFCHECK)
+	$(IVERILOG) $(IVFLAGS) -o $@ $(GEN_SRC) $(TB_SELFCHECK)
+
+$(VCD_SELFCHECK): $(VVP_SELFCHECK)
+	$(VVP) $<
+
 # Full system simulation
 sim_full: $(VCD_FULL)
 	@echo "Full system simulation complete. View with: make wave_full"
@@ -88,7 +101,7 @@ $(VCD_FULL): $(VVP_FULL)
 	$(VVP) $<
 
 # Run all simulations
-sim_all: sim_gen sim_full
+sim_all: sim_gen sim_selfcheck sim_full
 	@echo "All simulations complete."
 
 # ==============================================================================
@@ -96,6 +109,9 @@ sim_all: sim_gen sim_full
 # ==============================================================================
 
 wave_gen: $(VCD_GEN)
+	$(GTKWAVE) $< &
+
+wave_selfcheck: $(VCD_SELFCHECK)
 	$(GTKWAVE) $< &
 
 wave_full: $(VCD_FULL)
