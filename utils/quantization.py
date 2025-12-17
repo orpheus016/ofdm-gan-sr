@@ -334,7 +334,8 @@ def _export_conv_layer(
     weight_int8 = weight_quant.to(torch.int8)
     
     # Flatten for export (out_ch, in_ch, kernel) -> 1D array
-    weight_flat = weight_int8.numpy().flatten()
+    # Ensure tensor is on CPU before converting to NumPy
+    weight_flat = weight_int8.detach().cpu().numpy().flatten()
     
     # Save weight binary
     weight_file = f"{name.replace('.', '_')}_weights.bin"
@@ -345,7 +346,7 @@ def _export_conv_layer(
     crc = compute_crc32(weight_flat.tobytes())
     
     # Save scale factors
-    scale_flat = scale.squeeze().numpy()
+    scale_flat = scale.squeeze().detach().cpu().numpy()
     scale_file = f"{name.replace('.', '_')}_scale.bin"
     scale_path = output_path / scale_file
     scale_flat.astype(np.float32).tofile(scale_path)
@@ -353,7 +354,7 @@ def _export_conv_layer(
     # Export bias if present
     bias_info = None
     if layer.bias is not None:
-        bias = layer.bias.detach().numpy()
+        bias = layer.bias.detach().cpu().numpy()
         bias_file = f"{name.replace('.', '_')}_bias.bin"
         bias_path = output_path / bias_file
         bias.astype(np.float32).tofile(bias_path)
@@ -395,7 +396,7 @@ def _export_linear_layer(
     weight_int8 = weight_quant.to(torch.int8)
     
     # Save
-    weight_flat = weight_int8.numpy().flatten()
+    weight_flat = weight_int8.detach().cpu().numpy().flatten()
     weight_file = f"{name.replace('.', '_')}_weights.bin"
     weight_path = output_path / weight_file
     weight_flat.tofile(weight_path)
@@ -403,7 +404,7 @@ def _export_linear_layer(
     crc = compute_crc32(weight_flat.tobytes())
     
     # Scale
-    scale_flat = scale.squeeze().numpy()
+    scale_flat = scale.squeeze().detach().cpu().numpy()
     scale_file = f"{name.replace('.', '_')}_scale.bin"
     scale_path = output_path / scale_file
     scale_flat.astype(np.float32).tofile(scale_path)
@@ -411,7 +412,7 @@ def _export_linear_layer(
     # Bias
     bias_info = None
     if layer.bias is not None:
-        bias = layer.bias.detach().numpy()
+        bias = layer.bias.detach().cpu().numpy()
         bias_file = f"{name.replace('.', '_')}_bias.bin"
         bias_path = output_path / bias_file
         bias.astype(np.float32).tofile(bias_path)

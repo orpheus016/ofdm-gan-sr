@@ -521,13 +521,14 @@ class CWGANGPTrainer:
         final_path = checkpoint_dir / 'final_model.pt'
         self.save_checkpoint(str(final_path))
         
-        # Export weights for FPGA
-        export_dir = Path(self.config.get('paths', {}).get('export_dir', './export'))
-        export_dir.mkdir(parents=True, exist_ok=True)
-        
-        print("\nExporting weights for FPGA...")
-        quant_config = QuantizationConfig()
-        export_weights_fpga(self.generator, str(export_dir / 'generator'), quant_config)
+        # Export weights for FPGA (can be disabled via config)
+        if self.config.get('export_after_training', True):
+            export_dir = Path(self.config.get('paths', {}).get('export_dir', './export'))
+            export_dir.mkdir(parents=True, exist_ok=True)
+            
+            print("\nExporting weights for FPGA...")
+            quant_config = QuantizationConfig()
+            export_weights_fpga(self.generator, str(export_dir / 'generator'), quant_config)
         
         if self.writer:
             self.writer.close()
@@ -552,6 +553,14 @@ def main():
                         help='Experiment name')
     parser.add_argument('--synthetic', action='store_true',
                         help='Use synthetic data (for testing)')
+    parser.add_argument('--skip_export', action='store_true',
+                        help='Skip FPGA export after training')
+    parser.add_argument('--export_only', action='store_true',
+                        help='Only export weights (no training)')
+    parser.add_argument('--export_checkpoint', type=str, default=None,
+                        help='Checkpoint path to load for export-only mode')
+    parser.add_argument('--export_dir', type=str, default=None,
+                        help='Directory to write exported weights (overrides config)')
     
     args = parser.parse_args()
     
@@ -569,6 +578,35 @@ def main():
     if args.lr:
         config.setdefault('training', {}).setdefault('optimizer', {})['lr_generator'] = args.lr
         config.setdefault('training', {}).setdefault('optimizer', {})['lr_discriminator'] = args.lr
+    if args.skip_export:
+        config['export_after_training'] = False
+    if args.export_dir:
+        config.setdefault('paths', {})['export_dir'] = args.export_dir
+
+    # Export-only mode: load checkpoint and export without training
+    if args.export_only:
+        ckpt_path = args.export_checkpoint
+        if not ckpt_path or not os.path.exists(ckpt_path):
+            raise FileNotFoundError("--export_only requires --export_checkpoint pointing to a valid file")
+        
+        # Create model and load checkpoint
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        generator = UNetGenerator()
+        checkpoint = torch.load(ckpt_path, map_location=device)
+        generator.load_state_dict(checkpoint['generator_state_dict'])
+        
+        # Export directory
+        export_dir = Path(config.get('paths', {}).get('export_dir', './export'))
+        export_dir.mkdir(parents=True, exist_ok=True)
+        
+        print(f"Exporting weights from checkpoint: {ckpt_path}")
+        print(f"Writing to: {export_dir}")
+        
+        # Run export (device-agnostic; utils handles cpu conversion)
+        quant_config = QuantizationConfig()
+        export_weights_fpga(generator, str(export_dir / 'generator'), quant_config)
+        print("Export complete.")
+        return
         
     # Get training params
     batch_size = config.get('training', {}).get('batch_size', 32)
