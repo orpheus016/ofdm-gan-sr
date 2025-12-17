@@ -392,24 +392,24 @@ class UNetGenerator(nn.Module):
         
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
         
-        # D5: [B, 512, 32] → [B, 512, 64] (after upsample + skip_e5)
-        self.dec1_1 = nn.Conv1d(channels[4], channels[4], kernel_size, stride=1, padding=1)
-        self.dec1_2 = nn.Conv1d(channels[4], channels[4], kernel_size, stride=1, padding=1)
+        # D5: [B, 512, 32] → [B, 256, 64] (upsample to 64, reduce channels to match e4)
+        self.dec1_1 = nn.Conv1d(channels[4], channels[3], kernel_size, stride=1, padding=1)
+        self.dec1_2 = nn.Conv1d(channels[3], channels[3], kernel_size, stride=1, padding=1)
         
-        # D4: [B, 512, 64] → [B, 256, 128] (after upsample + skip_e4)
-        self.dec2_1 = nn.Conv1d(channels[4], channels[3], kernel_size, stride=1, padding=1)
-        self.dec2_2 = nn.Conv1d(channels[3], channels[3], kernel_size, stride=1, padding=1)
+        # D4: [B, 256, 64] → [B, 128, 128] (after upsample + skip_e4)
+        self.dec2_1 = nn.Conv1d(channels[3], channels[2], kernel_size, stride=1, padding=1)
+        self.dec2_2 = nn.Conv1d(channels[2], channels[2], kernel_size, stride=1, padding=1)
         
-        # D3: [B, 256, 128] → [B, 128, 256] (after upsample + skip_e3)
-        self.dec3_1 = nn.Conv1d(channels[3], channels[2], kernel_size, stride=1, padding=1)
-        self.dec3_2 = nn.Conv1d(channels[2], channels[2], kernel_size, stride=1, padding=1)
+        # D3: [B, 128, 128] → [B, 64, 256] (after upsample + skip_e3)
+        self.dec3_1 = nn.Conv1d(channels[2], channels[1], kernel_size, stride=1, padding=1)
+        self.dec3_2 = nn.Conv1d(channels[1], channels[1], kernel_size, stride=1, padding=1)
         
-        # D2: [B, 128, 256] → [B, 64, 512] (after upsample + skip_e2)
-        self.dec4_1 = nn.Conv1d(channels[2], channels[1], kernel_size, stride=1, padding=1)
-        self.dec4_2 = nn.Conv1d(channels[1], channels[1], kernel_size, stride=1, padding=1)
+        # D2: [B, 64, 256] → [B, 32, 512] (after upsample + skip_e2)
+        self.dec4_1 = nn.Conv1d(channels[1], channels[0], kernel_size, stride=1, padding=1)
+        self.dec4_2 = nn.Conv1d(channels[0], channels[0], kernel_size, stride=1, padding=1)
         
-        # D1: [B, 64, 512] → [B, 32, 1024] (after upsample + skip_e1)
-        self.dec5_1 = nn.Conv1d(channels[1], channels[0], kernel_size, stride=1, padding=1)
+        # D1: [B, 32, 512] → [B, 32, 1024] (after upsample + skip_e1)
+        self.dec5_1 = nn.Conv1d(channels[0], channels[0], kernel_size, stride=1, padding=1)
         self.dec5_2 = nn.Conv1d(channels[0], channels[0], kernel_size, stride=1, padding=1)
         
         # ===========================================
@@ -467,33 +467,33 @@ class UNetGenerator(nn.Module):
         b = self.lrelu(self.bottle2(b))
         
         # =================== DECODER ===================
-        # D5: 512×32 → 512×64 (upsample, no skip - bottleneck has no matching encoder)
+        # D5: 512×32 → 256×64 (upsample and reduce channels to match e4)
         d5 = self.upsample(b)
         d5 = self.lrelu(self.dec1_1(d5))
+        d5 = d5 + e4  # Additive skip connection (both 256×64)
         d5 = self.lrelu(self.dec1_2(d5))
         
-        # D4: 512×64 → 256×128 (upsample + add skip_e4)
+        # D4: 256×64 → 128×128 (upsample + add skip_e3)
         d4 = self.upsample(d5)
-        d4 = self.lrelu(self.dec2_1(d4))  # 512→256 channels
-        d4 = d4 + e4  # Additive skip connection (both 256×128)
+        d4 = self.lrelu(self.dec2_1(d4))
+        d4 = d4 + e3  # Additive skip connection (both 128×128)
         d4 = self.lrelu(self.dec2_2(d4))
         
-        # D3: 256×128 → 128×256 (upsample + add skip_e3)
+        # D3: 128×128 → 64×256 (upsample + add skip_e2)
         d3 = self.upsample(d4)
-        d3 = self.lrelu(self.dec3_1(d3))  # 256→128 channels
-        d3 = d3 + e3  # Additive skip connection (both 128×256)
+        d3 = self.lrelu(self.dec3_1(d3))
+        d3 = d3 + e2  # Additive skip connection (both 64×256)
         d3 = self.lrelu(self.dec3_2(d3))
         
-        # D2: 128×256 → 64×512 (upsample + add skip_e2)
+        # D2: 64×256 → 32×512 (upsample + add skip_e1)
         d2 = self.upsample(d3)
-        d2 = self.lrelu(self.dec4_1(d2))  # 128→64 channels
-        d2 = d2 + e2  # Additive skip connection (both 64×512)
+        d2 = self.lrelu(self.dec4_1(d2))
+        d2 = d2 + e1  # Additive skip connection (both 32×512)
         d2 = self.lrelu(self.dec4_2(d2))
         
-        # D1: 64×512 → 32×1024 (upsample + add skip_e1)
+        # D1: 32×512 → 32×1024 (final upsample, no skip)
         d1 = self.upsample(d2)
-        d1 = self.lrelu(self.dec5_1(d1))  # 64→32 channels
-        d1 = d1 + e1  # Additive skip connection (both 32×1024)
+        d1 = self.lrelu(self.dec5_1(d1))
         d1 = self.lrelu(self.dec5_2(d1))
         
         # =================== FINAL ===================
