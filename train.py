@@ -162,8 +162,8 @@ class CWGANGPTrainer:
         
         # Optimizer settings
         opt_config = training_config.get('optimizer', {})
-        self.lr_g = opt_config.get('lr_generator', 1e-4)
-        self.lr_d = opt_config.get('lr_discriminator', 1e-4)
+        self.lr_g = float(opt_config.get('lr_generator', 1e-4))
+        self.lr_d = float(opt_config.get('lr_discriminator', 1e-4))
         self.betas = tuple(opt_config.get('betas', [0.0, 0.9]))
         
         # Scheduler settings

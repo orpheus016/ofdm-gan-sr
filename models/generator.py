@@ -467,34 +467,33 @@ class UNetGenerator(nn.Module):
         b = self.lrelu(self.bottle2(b))
         
         # =================== DECODER ===================
-        # D5: 512×32 → 512×64 (upsample + add skip_e5)
+        # D5: 512×32 → 512×64 (upsample, no skip - bottleneck has no matching encoder)
         d5 = self.upsample(b)
-        d5 = d5 + e5  # Additive skip connection
         d5 = self.lrelu(self.dec1_1(d5))
         d5 = self.lrelu(self.dec1_2(d5))
         
         # D4: 512×64 → 256×128 (upsample + add skip_e4)
         d4 = self.upsample(d5)
-        d4 = d4 + e4  # Additive skip connection
-        d4 = self.lrelu(self.dec2_1(d4))
+        d4 = self.lrelu(self.dec2_1(d4))  # 512→256 channels
+        d4 = d4 + e4  # Additive skip connection (both 256×128)
         d4 = self.lrelu(self.dec2_2(d4))
         
         # D3: 256×128 → 128×256 (upsample + add skip_e3)
         d3 = self.upsample(d4)
-        d3 = d3 + e3  # Additive skip connection
-        d3 = self.lrelu(self.dec3_1(d3))
+        d3 = self.lrelu(self.dec3_1(d3))  # 256→128 channels
+        d3 = d3 + e3  # Additive skip connection (both 128×256)
         d3 = self.lrelu(self.dec3_2(d3))
         
         # D2: 128×256 → 64×512 (upsample + add skip_e2)
         d2 = self.upsample(d3)
-        d2 = d2 + e2  # Additive skip connection
-        d2 = self.lrelu(self.dec4_1(d2))
+        d2 = self.lrelu(self.dec4_1(d2))  # 128→64 channels
+        d2 = d2 + e2  # Additive skip connection (both 64×512)
         d2 = self.lrelu(self.dec4_2(d2))
         
         # D1: 64×512 → 32×1024 (upsample + add skip_e1)
         d1 = self.upsample(d2)
-        d1 = d1 + e1  # Additive skip connection
-        d1 = self.lrelu(self.dec5_1(d1))
+        d1 = self.lrelu(self.dec5_1(d1))  # 64→32 channels
+        d1 = d1 + e1  # Additive skip connection (both 32×1024)
         d1 = self.lrelu(self.dec5_2(d1))
         
         # =================== FINAL ===================
