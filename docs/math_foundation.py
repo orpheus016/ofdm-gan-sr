@@ -1,12 +1,13 @@
 # =============================================================================
 # CWGAN-GP for OFDM Signal Reconstruction
-# Mathematical Foundation Document
+# Mathematical Foundation Document - MINI ARCHITECTURE
 # =============================================================================
 
 """
 ================================================================================
                     MATHEMATICAL FOUNDATION
                     CWGAN-GP for OFDM Signal Reconstruction
+                    MINI ARCHITECTURE FOR FPGA
 ================================================================================
 
 TABLE OF CONTENTS
@@ -15,12 +16,12 @@ TABLE OF CONTENTS
 2. Wireless Channel Models
 3. GAN Theory (WGAN-GP)
 4. Conditional GAN (CWGAN-GP)
-5. 1D U-Net Architecture
+5. Mini U-Net Architecture
 6. Convolution Mathematics
 7. Activation Functions
 8. Loss Functions
-9. Quantization for FPGA
-10. Hardware Implementation Math
+9. Fixed-Point Quantization (Q1.7 / Q8.8)
+10. RTL Hardware Implementation
 
 ================================================================================
 1. OFDM SIGNAL MODEL
@@ -30,39 +31,26 @@ ORTHOGONAL FREQUENCY DIVISION MULTIPLEXING (OFDM)
 -------------------------------------------------
 
 Basic Principle:
-    Divide a high-rate data stream into N parallel low-rate streams,
-    each modulated onto orthogonal subcarriers.
+    Divide data into N parallel streams, each modulated onto orthogonal subcarriers.
 
 Time-Domain OFDM Symbol Generation:
     
     x[n] = (1/√N) Σ_{k=0}^{N-1} X[k] · exp(j·2π·k·n/N)
     
     Where:
-        - N = Number of subcarriers (e.g., 64)
-        - X[k] = Complex QAM symbol on subcarrier k
+        - N = Number of subcarriers (8 for mini architecture)
+        - X[k] = QPSK symbol on subcarrier k
         - x[n] = Time-domain sample n
-        - j = √(-1)
-    
-    This is equivalent to the Inverse DFT (IDFT).
-
-Frequency-Domain Representation:
-    
-    X[k] = (1/√N) Σ_{n=0}^{N-1} x[n] · exp(-j·2π·k·n/N)
-    
-    This is the DFT, used at the receiver.
-
-Cyclic Prefix:
-    To combat Inter-Symbol Interference (ISI), copy last L_cp samples:
-    
-    x_cp[n] = x[(n - L_cp) mod N], for n = 0, 1, ..., N + L_cp - 1
-    
-    Creates circular convolution with channel, enabling simple equalization.
 
 I/Q Representation:
-    Complex signal x = I + jQ is stored as 2-channel real tensor:
+    Complex signal x = I + jQ stored as 2-channel real tensor:
     
-    x_tensor = [I[0], I[1], ..., I[L-1]]
-               [Q[0], Q[1], ..., Q[L-1]]  ∈ ℝ^(2×L)
+    x_tensor = [I[0], I[1], ..., I[15]]   ∈ ℝ^(2×16)
+               [Q[0], Q[1], ..., Q[15]]  
+
+QPSK MODULATION:
+    Symbols in {(+1+j)/sqrt(2), (+1-j)/sqrt(2), (-1+j)/sqrt(2), (-1-j)/sqrt(2)}
+    Normalized power = 1
 
 ================================================================================
 2. WIRELESS CHANNEL MODELS
@@ -75,94 +63,33 @@ AWGN CHANNEL (Additive White Gaussian Noise)
     Where n ~ CN(0, σ²I), complex circular Gaussian noise.
     
     σ² = P_x / (10^(SNR_dB/10))
-    
     P_x = E[|x|²] = signal power
 
-RAYLEIGH FADING CHANNEL
------------------------
-    y = h·x + n
-    
-    Where h ~ CN(0, 1), |h| follows Rayleigh distribution:
-    
-    f_{|h|}(r) = 2r·exp(-r²), r ≥ 0
-    
-    E[|h|²] = 1 (normalized)
-    
-    Models non-line-of-sight propagation with rich scattering.
-
-RICIAN FADING CHANNEL
----------------------
-    h = √(K/(K+1))·exp(jθ) + √(1/(K+1))·h_NLOS
-    
-    Where:
-        - K = Rician K-factor (LOS/NLOS power ratio)
-        - θ ~ U(0, 2π) = random LOS phase
-        - h_NLOS ~ CN(0, 1) = scattered component
-    
-    |h| follows Rician distribution:
-    
-    f_{|h|}(r) = 2r(K+1)·exp(-K-(K+1)r²)·I_0(2r√(K(K+1)))
-    
-    Where I_0 is the modified Bessel function of first kind.
-
-MULTIPATH CHANNEL
------------------
-    y[n] = Σ_{l=0}^{L-1} h[l]·x[n-l] + n[n]
-    
-    Channel impulse response h[l] with L taps.
-    
-    Frequency-selective fading in OFDM:
-        Y[k] = H[k]·X[k] + N[k]
-    
-    Where H[k] = DFT{h[l]} is the channel frequency response.
+SNR Range for Training: 5 - 20 dB
 
 ================================================================================
 3. GAN THEORY (WGAN-GP)
 ================================================================================
 
-GENERATIVE ADVERSARIAL NETWORKS
--------------------------------
-Two networks competing in a minimax game:
-    
-    min_G max_D V(D, G) = E_{x~P_data}[log D(x)] + E_{z~P_z}[log(1 - D(G(z)))]
-    
-    - Generator G: maps noise z to data-like samples
-    - Discriminator D: classifies real vs fake
-
 WASSERSTEIN GAN (WGAN)
 ----------------------
 Uses Wasserstein-1 distance (Earth Mover's Distance):
     
-    W(P_r, P_g) = inf_{γ∈Π(P_r,P_g)} E_{(x,y)~γ}[||x - y||]
-    
-    Kantorovich-Rubinstein duality:
-    
     W(P_r, P_g) = sup_{||f||_L ≤ 1} E_{x~P_r}[f(x)] - E_{x~P_g}[f(x)]
-    
-    Where ||f||_L ≤ 1 means f is 1-Lipschitz continuous.
 
 WGAN CRITIC OBJECTIVE:
     L_D = E_{x~P_g}[D(x)] - E_{x~P_r}[D(x)]
-    
-    Minimize this (discriminator outputs unbounded scores, not probabilities).
-
-WGAN GENERATOR OBJECTIVE:
-    L_G = -E_{x~P_g}[D(x)]
-    
-    Maximize discriminator score on generated samples.
 
 GRADIENT PENALTY (WGAN-GP)
 --------------------------
-Enforce 1-Lipschitz constraint via gradient penalty:
+Enforce 1-Lipschitz constraint:
     
     GP = E_{x̂~P_{x̂}}[(||∇_{x̂}D(x̂)||_2 - 1)²]
     
     Where x̂ = εx_real + (1-ε)x_fake, ε ~ U(0,1)
-    
-    Interpolated samples between real and fake.
 
 FULL WGAN-GP CRITIC LOSS:
-    L_D = E[D(G(z))] - E[D(x)] + λ·GP
+    L_D = E[D(G(c))] - E[D(x)] + λ·GP
     
     Where λ = 10 (gradient penalty coefficient).
 
@@ -172,29 +99,19 @@ FULL WGAN-GP CRITIC LOSS:
 
 CONDITIONAL GENERATION
 ----------------------
-Learn mapping from condition c to output:
-    
-    G: (c) → y
-    D: (x, c) → validity score
-    
+    G: (c) → y      (noisy → enhanced)
+    D: (x, c) → score
+
 For OFDM enhancement:
-    - c = noisy I/Q signal
-    - y = clean I/Q signal
-    - G(c) = enhanced I/Q signal
+    - c = noisy I/Q signal [2×16]
+    - y = clean I/Q signal [2×16]
+    - G(c) = enhanced I/Q signal [2×16]
 
 CONDITIONAL DISCRIMINATOR
 -------------------------
-Discriminator receives concatenated input:
+    input = concat(candidate[2×16], condition[2×16]) = [4×16]
     
-    input = concat(candidate, condition)
-    
-    Shape: [B, 4, L] for our case (2 candidate + 2 condition channels)
-    
-    D(x, c) outputs scalar score for pair (x, c).
-
-TRAINING PAIRS:
-    Real pair: (x_clean, x_noisy) → high score
-    Fake pair: (G(x_noisy), x_noisy) → low score
+    D(x, c) outputs scalar score.
 
 CWGAN-GP LOSSES:
     
@@ -207,60 +124,55 @@ CWGAN-GP LOSSES:
     Where λ_rec = 100 is reconstruction loss weight.
 
 ================================================================================
-5. 1D U-NET ARCHITECTURE
+5. MINI U-NET ARCHITECTURE
 ================================================================================
 
-U-NET STRUCTURE
----------------
-Encoder-decoder with skip connections:
+MINI U-NET STRUCTURE (Matches RTL)
+----------------------------------
 
-    Input                                                     Output
-      ↓                                                         ↑
-    [Enc1] ──────────────────────────────────────────────→ [Dec1]
-      ↓                                                         ↑
-    [Enc2] ──────────────────────────────────────────→ [Dec2]
-      ↓                                                     ↑
-    [Enc3] ──────────────────────────────────→ [Dec3]
-      ↓                                             ↑
-    [Enc4] ──────────────────────────→ [Dec4]
-      ↓                                     ↑
-    [Enc5] ──────────────→ [Dec5]
-      ↓                         ↑
-    [Bottleneck] ───────────────┘
+    Input [2×16]
+         ↓
+    [Enc1: 2→4, s=2] ──────────┐
+         ↓                      │ (Skip Connection)
+    [Bottleneck: 4→8, s=2]     │
+         ↓                      │
+    [Upsample ×2]              │
+         ↓                      │
+    [Dec1: 8→4, s=1] ←─────────┘ (Add)
+         ↓
+    [Upsample ×2]
+         ↓
+    [OutConv: 4→2, s=1]
+         ↓
+    [Tanh]
+         ↓
+    Output [2×16]
 
-ENCODER BLOCK:
-    E_i(x) = LeakyReLU(Conv1D_s1(LeakyReLU(Conv1D_s2(x))))
-    
-    - Conv1D_s2: stride=2 convolution (downsample by 2×)
-    - Conv1D_s1: stride=1 convolution (same resolution)
-    - Output resolution: L/2 compared to input
+LAYER SPECIFICATIONS:
+---------------------
+| Layer      | In Ch | Out Ch | Stride | L_in | L_out | Params |
+|------------|-------|--------|--------|------|-------|--------|
+| Enc1       | 2     | 4      | 2      | 16   | 8     | 28     |
+| Bottleneck | 4     | 8      | 2      | 8    | 4     | 104    |
+| Dec1       | 8     | 4      | 1      | 8    | 8     | 100    |
+| OutConv    | 4     | 2      | 1      | 16   | 16    | 26     |
+|------------|-------|--------|--------|------|-------|--------|
+| TOTAL      |       |        |        |      |       | 258    |
 
-DECODER BLOCK:
-    D_i(x, skip) = LeakyReLU(Conv1D(LeakyReLU(Conv1D(Upsample(x) + skip))))
-    
-    - Upsample: Nearest neighbor 2× upsampling
-    - Skip: Additive skip connection from encoder
-    - Output resolution: 2L compared to input
+SKIP CONNECTION (ADDITIVE):
+    dec1_out = LeakyReLU(Conv(upsample(bottleneck_out)))
+    merged = dec1_out + enc1_out
 
-SKIP CONNECTIONS (ADDITIVE):
-    merged = upsample(decoder_input) + encoder_output
-    
-    Requires matching dimensions (ensured by symmetric architecture).
-    
-    Advantages over concatenation:
-    - Fewer parameters in subsequent conv layers
-    - Gradient flow improvement
-    - Memory efficiency
-
-CHANNEL PROGRESSION:
-    Level  Encoder         Bottleneck      Decoder
-    -----  --------------  --------------  --------------
-    0      2 → 32          -               32 → 2
-    1      32 → 64         -               64 → 32
-    2      64 → 128        -               128 → 64
-    3      128 → 256       -               256 → 128
-    4      256 → 512       -               512 → 256
-    BN     -               512 → 512       -
+MINI DISCRIMINATOR STRUCTURE
+----------------------------
+| Layer  | In Ch | Out Ch | Stride | L_out | Params |
+|--------|-------|--------|--------|-------|--------|
+| Conv1  | 4     | 8      | 2      | 8     | 104    |
+| Conv2  | 8     | 16     | 2      | 4     | 400    |
+| Pool   | 16    | 16     | -      | 1     | 0      |
+| Dense  | 16    | 1      | -      | 1     | 17     |
+|--------|-------|--------|--------|-------|--------|
+| TOTAL  |       |        |        |       | 521    |
 
 ================================================================================
 6. CONVOLUTION MATHEMATICS
@@ -268,44 +180,32 @@ CHANNEL PROGRESSION:
 
 1D CONVOLUTION
 --------------
-Discrete convolution with kernel w of size K:
-    
     y[n] = Σ_{k=0}^{K-1} w[k] · x[n·s + k - p] + b
     
-    Where:
-        - s = stride
-        - p = padding
-        - b = bias
-
 OUTPUT LENGTH:
     L_out = floor((L_in + 2p - K) / s) + 1
     
     For K=3, s=2, p=1:
-        L_out = floor((L_in + 2 - 3) / 2) + 1 = floor((L_in - 1) / 2) + 1
-        
-        For L_in = 1024: L_out = 512
+        L_out = floor((L_in - 1) / 2) + 1
+        For L_in = 16: L_out = 8
+        For L_in = 8: L_out = 4
 
 PARAMETER COUNT:
-    params = K · C_in · C_out + C_out
+    params = K · C_in · C_out + C_out (bias)
     
-    Where:
-        - K = kernel size
-        - C_in = input channels
-        - C_out = output channels
-        - +C_out for bias
+    Enc1: 3 × 2 × 4 + 4 = 28
+    Bottleneck: 3 × 4 × 8 + 8 = 104
+    Dec1: 3 × 8 × 4 + 4 = 100
+    OutConv: 3 × 4 × 2 + 2 = 26
 
-MAC COUNT (Multiply-Accumulate):
+MAC COUNT (per layer):
     MACs = K · C_in · C_out · L_out
     
-    Per output sample: K · C_in · C_out multiplications and additions.
-
-EXAMPLE (enc1_1):
-    K=3, C_in=2, C_out=32, L_out=512
-    
-    params = 3 · 2 · 32 + 32 = 192 + 32 = 224  (wait, should include all)
-           = 3 · 2 · 32 + 32 = 224
-    
-    Actual with bias: 3 × 2 × 32 + 32 = 224
+    Enc1: 3 × 2 × 4 × 8 = 192
+    Bottleneck: 3 × 4 × 8 × 4 = 384
+    Dec1: 3 × 8 × 4 × 8 = 768
+    OutConv: 3 × 4 × 2 × 16 = 384
+    TOTAL: ~1,728 MACs/frame
 
 ================================================================================
 7. ACTIVATION FUNCTIONS
@@ -315,48 +215,28 @@ LEAKY RELU
 ----------
     LeakyReLU(x) = max(αx, x) = {  x    if x > 0
                                   αx   if x ≤ 0
-
-    Where α = 0.2 (negative slope).
     
-    Gradient:
-        d/dx LeakyReLU(x) = { 1   if x > 0
-                             α   if x ≤ 0
+    Where α = 0.2 (negative slope).
 
-    Advantages:
-    - Prevents "dying ReLU" problem
-    - Non-zero gradient for negative inputs
-
-HARDWARE IMPLEMENTATION:
-    if (x > 0):
-        y = x
-    else:
-        y = x >> 2  (for α = 0.25, use right shift)
-        # Or: y = (x * α_fixed) >> scale
-        
+HARDWARE IMPLEMENTATION (RTL):
     For α = 0.2 ≈ 0.203125 = 13/64:
-        y = (x * 13) >> 6
+        if (x > 0):
+            y = x
+        else:
+            y = (x * 13) >> 6
+    
+    Or simpler with α = 0.25:
+        y = (x < 0) ? (x >>> 2) : x
 
 TANH (Hyperbolic Tangent)
 -------------------------
     tanh(x) = (e^x - e^(-x)) / (e^x + e^(-x))
-            = 2σ(2x) - 1
-            = (e^(2x) - 1) / (e^(2x) + 1)
-    
     Range: (-1, 1)
-    
-    Used for final layer to bound output to normalized I/Q range.
 
 HARDWARE IMPLEMENTATION (LUT):
-    - Use 256-entry lookup table
-    - Input: INT8 index from saturated input
-    - Output: INT16 tanh value
-    
-    Piecewise linear approximation:
-        tanh(x) ≈ { -1           if x < -3
-                   x/3          if -3 ≤ x < 3
-                   1            if x ≥ 3
-                   
-    Or higher accuracy with more segments.
+    - 256-entry lookup table indexed by Q8.8 input
+    - Output: Q8.8 tanh value
+    - Linear interpolation for better accuracy
 
 ================================================================================
 8. LOSS FUNCTIONS
@@ -366,179 +246,82 @@ WASSERSTEIN LOSS (CRITIC)
 -------------------------
     L_D = E[D(fake)] - E[D(real)] + λ·GP
     
-    Components:
-    - E[D(fake)]: Mean critic score on generated samples
-    - E[D(real)]: Mean critic score on real samples
-    - GP: Gradient penalty term
-    - λ = 10: Gradient penalty coefficient
-
-GRADIENT PENALTY
-----------------
-    GP = E[(||∇_x̂ D(x̂)||_2 - 1)²]
-    
-    Computation:
-    1. Sample ε ~ U(0, 1)
-    2. Create interpolated: x̂ = ε·real + (1-ε)·fake
-    3. Forward pass: D(x̂)
-    4. Compute gradient: ∇_x̂ D(x̂)
-    5. L2 norm: ||∇||_2
-    6. Penalty: (||∇||_2 - 1)²
+    λ = 10 (gradient penalty coefficient)
 
 GENERATOR LOSS
 --------------
     L_G = L_adv + λ_rec · L_rec
     
-    Adversarial Loss:
-        L_adv = -E[D(G(c), c)]
+    Adversarial: L_adv = -E[D(G(c), c)]
+    Reconstruction: L_rec = E[|G(c) - x_real|]  (L1 loss)
     
-    Reconstruction Loss (L1):
-        L_rec = E[|G(c) - x_real|]
-        
-        L1 preferred over L2:
-        - L1: Encourages sparse errors, less blurry
-        - L2: Penalizes large errors more, can cause blur
-
-    λ_rec = 100: Reconstruction weight (high for supervised signal recovery)
+    λ_rec = 100 (reconstruction weight)
 
 ================================================================================
-9. QUANTIZATION FOR FPGA
+9. FIXED-POINT QUANTIZATION (Q1.7 / Q8.8)
 ================================================================================
 
-FIXED-POINT REPRESENTATION
---------------------------
-Signed integer representation with implicit scaling:
+Q1.7 FORMAT (WEIGHTS - 8-bit signed)
+------------------------------------
+    x_float ≈ x_int / 128
     
-    x_float ≈ x_int · 2^(-f)
+    Range: [-1.0, +0.9921875]
+    Resolution: 1/128 ≈ 0.0078
     
-    Where f = number of fractional bits.
-    
-    For pure integer (no fractional):
-        x_float = x_int · scale
+    Conversion:
+        x_q17 = clamp(round(x_float × 128), -128, 127)
+        x_float = x_q17 / 128
 
-SYMMETRIC QUANTIZATION
-----------------------
-    scale = max|x| / (2^(b-1) - 1)
+Q8.8 FORMAT (ACTIVATIONS - 16-bit signed)
+-----------------------------------------
+    x_float ≈ x_int / 256
     
-    x_quant = round(clamp(x / scale, -2^(b-1), 2^(b-1) - 1))
+    Range: [-128.0, +127.996]
+    Resolution: 1/256 ≈ 0.0039
     
-    x_dequant = x_quant · scale
+    Conversion:
+        x_q88 = clamp(round(x_float × 256), -32768, 32767)
+        x_float = x_q88 / 256
 
-PER-CHANNEL QUANTIZATION
-------------------------
-    For weights W with shape [C_out, C_in, K]:
+ACCUMULATOR (Q16.16 - 32-bit signed)
+------------------------------------
+    For MAC operations: weight (Q1.7) × activation (Q8.8)
+    Product is Q9.15, accumulated in Q16.16
     
-    scale_c = max(|W[c, :, :]|) / 127
-    
-    Each output channel has its own scale factor.
-    
-    Advantage: Better precision for channels with different magnitudes.
-
-QUANTIZATION RANGES:
-    INT8 weights: [-128, 127]
-    INT16 activations: [-32768, 32767]
-    INT32 accumulators: [-2^31, 2^31 - 1]
-
-ACCUMULATOR OVERFLOW PREVENTION:
-    For K×C_in multiply-accumulates with INT8 weights and INT16 activations:
-    
-    Max accumulator value: K · C_in · 127 · 32767
-    
-    For K=3, C_in=512:
-        3 × 512 × 127 × 32767 ≈ 6.4 × 10^9
-    
-    INT32 max: 2.1 × 10^9
-    
-    → Need careful scaling or use INT48/INT64 accumulators.
-
-REQUANTIZATION
---------------
-After accumulation, scale back to INT16:
-    
-    y_int16 = clamp(round(y_int32 · output_scale / (weight_scale · input_scale)), -32768, 32767)
-    
-    This is often implemented as:
-        y = (y_acc · mult) >> shift
-    
-    Where mult and shift are precomputed for each layer.
+    After accumulation, shift right by 7 to get Q8.8 result:
+        result_q88 = (accumulator + 64) >> 7
 
 ================================================================================
-10. HARDWARE IMPLEMENTATION MATH
+10. RTL HARDWARE IMPLEMENTATION
 ================================================================================
 
-MAC OPERATIONS
---------------
-Total MACs for generator: ~365 million per frame
-    
-    Throughput requirement for real-time:
-    - 30 fps: 365M × 30 = 10.95 GMAC/s
-    - 60 fps: 365M × 60 = 21.9 GMAC/s
+ARCHITECTURE OVERVIEW
+---------------------
+    Input Buffer [2×16 Q8.8] → Conv Engine → Skip RAM → Upsample → Tanh LUT → Output
 
-DSP UTILIZATION
----------------
-    DSP48 slice: 1 MAC per cycle (INT16 × INT8)
-    
-    At 200 MHz with N DSPs:
-        Throughput = N × 200 × 10^6 MAC/s
-    
-    For 30 fps: N ≥ 10.95 × 10^9 / (200 × 10^6) = 54.75 ≈ 55 DSPs
-    For 60 fps: N ≥ 110 DSPs
+CONV1D ENGINE (Parallel k=3):
+    - 3 multipliers per output channel
+    - Pipelined: fetch weights, multiply, accumulate, activate
+    - Supports stride=1 and stride=2
 
-MEMORY BANDWIDTH
-----------------
-Weight memory (generator): 5.5 MB (INT8)
-    
-    For 30 fps: 5.5 MB × 30 = 165 MB/s
-    
-    DDR4 bandwidth: ~25 GB/s → Easily sufficient
+STATE MACHINE (Generator):
+    ST_IDLE → ST_LOAD → ST_ENC1 → ST_BOTTLE → ST_DEC1 → ST_OUT → ST_TANH → ST_OUTPUT → ST_DONE
 
-Skip buffer memory: 160 KB (INT16)
-    - Can fit in BRAM for most FPGAs
+RESOURCE ESTIMATES:
+    LUTs: ~2,000-4,000
+    FFs:  ~1,000-2,000
+    DSPs: 4-8 (for parallel MAC)
+    BRAM: ~1-2 KB (weights + skip buffer)
 
-LATENCY CALCULATION
--------------------
-Pipeline latency (approximate):
-    
-    L_total = Σ_layers (L_compute + L_memory)
-    
-    L_compute per layer ≈ (MACs_layer) / (N_DSP × f_clk)
-    L_memory ≈ weight_fetch_cycles + activation_read_cycles
+LATENCY:
+    Estimated: ~500-1000 cycles per frame
+    At 100 MHz: ~5-10 μs per frame
 
-For streaming implementation:
-    Latency ≈ 2 × frame_length × (encoder_depth + decoder_depth)
-             ≈ 2 × 1024 × 10 = 20,480 cycles
-             At 200 MHz: ~102 μs
-
-LINE BUFFER REQUIREMENTS
-------------------------
-For K=3 convolution:
-    Need K-1 = 2 previous samples per channel
-    
-    Per layer: 2 × C_in samples
-    
-    Maximum (at 512 channels): 2 × 512 = 1024 samples
-    Storage: 1024 × 16 bits = 2 KB per layer
-
-UPSAMPLE IMPLEMENTATION
------------------------
-Nearest neighbor 2×:
-    y[2n] = y[2n+1] = x[n]
-    
-    Hardware: Just duplicate each sample (no multiplies)
-    
-    Can be done with FSM or simple counter logic.
-
-TANH LUT SIZING
----------------
-For INT8 input index: 256 entries
-For INT16 output: 256 × 2 bytes = 512 bytes
-
-Linear interpolation for better accuracy:
-    idx = x >> input_shift
-    frac = x & ((1 << input_shift) - 1)
-    y = lut[idx] + (lut[idx+1] - lut[idx]) × frac >> frac_bits
+THROUGHPUT:
+    At 100 MHz with 1000 cycles/frame: 100,000 frames/sec
 
 ================================================================================
-END OF MATHEMATICAL FOUNDATION
+                    END OF MATHEMATICAL FOUNDATION
 ================================================================================
 """
 
