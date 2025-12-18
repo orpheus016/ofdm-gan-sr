@@ -1,0 +1,515 @@
+{
+  "config": {
+    "weight_bits": 8,
+    "activation_bits": 16,
+    "per_channel": true
+  },
+  "layers": {
+    "enc1_1": {
+      "type": "Conv1d",
+      "weight_file": "enc1_1_weights.bin",
+      "scale_file": "enc1_1_scale.bin",
+      "bias": {
+        "file": "enc1_1_bias.bin",
+        "shape": [
+          32
+        ]
+      },
+      "weight_shape": [
+        32,
+        2,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 2,
+      "padding": 1,
+      "in_channels": 2,
+      "out_channels": 32,
+      "crc32": "d9d02f0f"
+    },
+    "enc1_2": {
+      "type": "Conv1d",
+      "weight_file": "enc1_2_weights.bin",
+      "scale_file": "enc1_2_scale.bin",
+      "bias": {
+        "file": "enc1_2_bias.bin",
+        "shape": [
+          32
+        ]
+      },
+      "weight_shape": [
+        32,
+        32,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 32,
+      "out_channels": 32,
+      "crc32": "0872dd01"
+    },
+    "enc2_1": {
+      "type": "Conv1d",
+      "weight_file": "enc2_1_weights.bin",
+      "scale_file": "enc2_1_scale.bin",
+      "bias": {
+        "file": "enc2_1_bias.bin",
+        "shape": [
+          64
+        ]
+      },
+      "weight_shape": [
+        64,
+        32,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 2,
+      "padding": 1,
+      "in_channels": 32,
+      "out_channels": 64,
+      "crc32": "f393af7a"
+    },
+    "enc2_2": {
+      "type": "Conv1d",
+      "weight_file": "enc2_2_weights.bin",
+      "scale_file": "enc2_2_scale.bin",
+      "bias": {
+        "file": "enc2_2_bias.bin",
+        "shape": [
+          64
+        ]
+      },
+      "weight_shape": [
+        64,
+        64,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 64,
+      "out_channels": 64,
+      "crc32": "3020b349"
+    },
+    "enc3_1": {
+      "type": "Conv1d",
+      "weight_file": "enc3_1_weights.bin",
+      "scale_file": "enc3_1_scale.bin",
+      "bias": {
+        "file": "enc3_1_bias.bin",
+        "shape": [
+          128
+        ]
+      },
+      "weight_shape": [
+        128,
+        64,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 2,
+      "padding": 1,
+      "in_channels": 64,
+      "out_channels": 128,
+      "crc32": "83fba773"
+    },
+    "enc3_2": {
+      "type": "Conv1d",
+      "weight_file": "enc3_2_weights.bin",
+      "scale_file": "enc3_2_scale.bin",
+      "bias": {
+        "file": "enc3_2_bias.bin",
+        "shape": [
+          128
+        ]
+      },
+      "weight_shape": [
+        128,
+        128,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 128,
+      "out_channels": 128,
+      "crc32": "0ffb26d1"
+    },
+    "enc4_1": {
+      "type": "Conv1d",
+      "weight_file": "enc4_1_weights.bin",
+      "scale_file": "enc4_1_scale.bin",
+      "bias": {
+        "file": "enc4_1_bias.bin",
+        "shape": [
+          256
+        ]
+      },
+      "weight_shape": [
+        256,
+        128,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 2,
+      "padding": 1,
+      "in_channels": 128,
+      "out_channels": 256,
+      "crc32": "c8ec3be7"
+    },
+    "enc4_2": {
+      "type": "Conv1d",
+      "weight_file": "enc4_2_weights.bin",
+      "scale_file": "enc4_2_scale.bin",
+      "bias": {
+        "file": "enc4_2_bias.bin",
+        "shape": [
+          256
+        ]
+      },
+      "weight_shape": [
+        256,
+        256,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 256,
+      "out_channels": 256,
+      "crc32": "429d849c"
+    },
+    "enc5_1": {
+      "type": "Conv1d",
+      "weight_file": "enc5_1_weights.bin",
+      "scale_file": "enc5_1_scale.bin",
+      "bias": {
+        "file": "enc5_1_bias.bin",
+        "shape": [
+          512
+        ]
+      },
+      "weight_shape": [
+        512,
+        256,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 2,
+      "padding": 1,
+      "in_channels": 256,
+      "out_channels": 512,
+      "crc32": "a6eeeee8"
+    },
+    "enc5_2": {
+      "type": "Conv1d",
+      "weight_file": "enc5_2_weights.bin",
+      "scale_file": "enc5_2_scale.bin",
+      "bias": {
+        "file": "enc5_2_bias.bin",
+        "shape": [
+          512
+        ]
+      },
+      "weight_shape": [
+        512,
+        512,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 512,
+      "out_channels": 512,
+      "crc32": "6fdd7277"
+    },
+    "bottle1": {
+      "type": "Conv1d",
+      "weight_file": "bottle1_weights.bin",
+      "scale_file": "bottle1_scale.bin",
+      "bias": {
+        "file": "bottle1_bias.bin",
+        "shape": [
+          512
+        ]
+      },
+      "weight_shape": [
+        512,
+        512,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 512,
+      "out_channels": 512,
+      "crc32": "ae84d68f"
+    },
+    "bottle2": {
+      "type": "Conv1d",
+      "weight_file": "bottle2_weights.bin",
+      "scale_file": "bottle2_scale.bin",
+      "bias": {
+        "file": "bottle2_bias.bin",
+        "shape": [
+          512
+        ]
+      },
+      "weight_shape": [
+        512,
+        512,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 512,
+      "out_channels": 512,
+      "crc32": "4f94d483"
+    },
+    "dec1_1": {
+      "type": "Conv1d",
+      "weight_file": "dec1_1_weights.bin",
+      "scale_file": "dec1_1_scale.bin",
+      "bias": {
+        "file": "dec1_1_bias.bin",
+        "shape": [
+          256
+        ]
+      },
+      "weight_shape": [
+        256,
+        512,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 512,
+      "out_channels": 256,
+      "crc32": "b5a0cf7e"
+    },
+    "dec1_2": {
+      "type": "Conv1d",
+      "weight_file": "dec1_2_weights.bin",
+      "scale_file": "dec1_2_scale.bin",
+      "bias": {
+        "file": "dec1_2_bias.bin",
+        "shape": [
+          256
+        ]
+      },
+      "weight_shape": [
+        256,
+        256,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 256,
+      "out_channels": 256,
+      "crc32": "c0c79859"
+    },
+    "dec2_1": {
+      "type": "Conv1d",
+      "weight_file": "dec2_1_weights.bin",
+      "scale_file": "dec2_1_scale.bin",
+      "bias": {
+        "file": "dec2_1_bias.bin",
+        "shape": [
+          128
+        ]
+      },
+      "weight_shape": [
+        128,
+        256,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 256,
+      "out_channels": 128,
+      "crc32": "b365af00"
+    },
+    "dec2_2": {
+      "type": "Conv1d",
+      "weight_file": "dec2_2_weights.bin",
+      "scale_file": "dec2_2_scale.bin",
+      "bias": {
+        "file": "dec2_2_bias.bin",
+        "shape": [
+          128
+        ]
+      },
+      "weight_shape": [
+        128,
+        128,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 128,
+      "out_channels": 128,
+      "crc32": "b7ca4dd3"
+    },
+    "dec3_1": {
+      "type": "Conv1d",
+      "weight_file": "dec3_1_weights.bin",
+      "scale_file": "dec3_1_scale.bin",
+      "bias": {
+        "file": "dec3_1_bias.bin",
+        "shape": [
+          64
+        ]
+      },
+      "weight_shape": [
+        64,
+        128,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 128,
+      "out_channels": 64,
+      "crc32": "3fc9de42"
+    },
+    "dec3_2": {
+      "type": "Conv1d",
+      "weight_file": "dec3_2_weights.bin",
+      "scale_file": "dec3_2_scale.bin",
+      "bias": {
+        "file": "dec3_2_bias.bin",
+        "shape": [
+          64
+        ]
+      },
+      "weight_shape": [
+        64,
+        64,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 64,
+      "out_channels": 64,
+      "crc32": "86fd34f9"
+    },
+    "dec4_1": {
+      "type": "Conv1d",
+      "weight_file": "dec4_1_weights.bin",
+      "scale_file": "dec4_1_scale.bin",
+      "bias": {
+        "file": "dec4_1_bias.bin",
+        "shape": [
+          32
+        ]
+      },
+      "weight_shape": [
+        32,
+        64,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 64,
+      "out_channels": 32,
+      "crc32": "b3a3e660"
+    },
+    "dec4_2": {
+      "type": "Conv1d",
+      "weight_file": "dec4_2_weights.bin",
+      "scale_file": "dec4_2_scale.bin",
+      "bias": {
+        "file": "dec4_2_bias.bin",
+        "shape": [
+          32
+        ]
+      },
+      "weight_shape": [
+        32,
+        32,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 32,
+      "out_channels": 32,
+      "crc32": "23fcfc40"
+    },
+    "dec5_1": {
+      "type": "Conv1d",
+      "weight_file": "dec5_1_weights.bin",
+      "scale_file": "dec5_1_scale.bin",
+      "bias": {
+        "file": "dec5_1_bias.bin",
+        "shape": [
+          32
+        ]
+      },
+      "weight_shape": [
+        32,
+        32,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 32,
+      "out_channels": 32,
+      "crc32": "c6777078"
+    },
+    "dec5_2": {
+      "type": "Conv1d",
+      "weight_file": "dec5_2_weights.bin",
+      "scale_file": "dec5_2_scale.bin",
+      "bias": {
+        "file": "dec5_2_bias.bin",
+        "shape": [
+          32
+        ]
+      },
+      "weight_shape": [
+        32,
+        32,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 32,
+      "out_channels": 32,
+      "crc32": "64617239"
+    },
+    "final": {
+      "type": "Conv1d",
+      "weight_file": "final_weights.bin",
+      "scale_file": "final_scale.bin",
+      "bias": {
+        "file": "final_bias.bin",
+        "shape": [
+          2
+        ]
+      },
+      "weight_shape": [
+        2,
+        32,
+        3
+      ],
+      "kernel_size": 3,
+      "stride": 1,
+      "padding": 1,
+      "in_channels": 32,
+      "out_channels": 2,
+      "crc32": "cdad5c66"
+    }
+  }
+}
