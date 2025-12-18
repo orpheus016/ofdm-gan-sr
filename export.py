@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from models.generator import UNetGenerator
+from models.generator import MiniGenerator
 from utils.quantization import QuantizationConfig, export_weights_fpga
 
 
@@ -50,7 +50,7 @@ def main():
         device = torch.device(args.device)
 
     # Create model and load weights
-    generator = UNetGenerator()
+    generator = MiniGenerator()
     checkpoint = torch.load(args.checkpoint, map_location=device)
 
     # Support both full training checkpoint and bare state_dict

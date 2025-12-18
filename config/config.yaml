@@ -1,16 +1,17 @@
 # =============================================================================
 # CWGAN-GP OFDM Signal Reconstruction - Configuration
+# MINI ARCHITECTURE for FPGA RTL Implementation
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# OFDM Parameters
+# OFDM Parameters (Mini Architecture)
 # -----------------------------------------------------------------------------
 ofdm:
-  frame_length: 1024          # Number of samples per OFDM frame
-  num_subcarriers: 64         # Number of OFDM subcarriers
-  cp_length: 16               # Cyclic prefix length
-  modulation: "QAM16"         # Modulation scheme: QPSK, QAM16, QAM64
-  pilot_spacing: 8            # Pilot subcarrier spacing
+  frame_length: 16            # Number of samples per OFDM frame (mini)
+  num_subcarriers: 8          # Number of OFDM subcarriers (mini)
+  cp_length: 2                # Cyclic prefix length (mini)
+  modulation: "QPSK"          # Modulation scheme: QPSK for mini
+  pilot_spacing: 4            # Pilot subcarrier spacing
 
 # -----------------------------------------------------------------------------
 # Channel Parameters (for synthetic data generation)
@@ -18,31 +19,38 @@ ofdm:
 channel:
   snr_range: [0, 30]          # SNR range in dB for training
   snr_test: [5, 10, 15, 20]   # SNR values for testing
-  channel_type: "rayleigh"    # Channel type: awgn, rayleigh, rician
-  doppler_freq: 100           # Max Doppler frequency (Hz)
-  delay_spread: 5e-6          # RMS delay spread (seconds)
+  channel_type: "awgn"        # Channel type: awgn (simpler for mini)
+  doppler_freq: 50            # Max Doppler frequency (Hz)
+  delay_spread: 1e-6          # RMS delay spread (seconds)
 
 # -----------------------------------------------------------------------------
-# Model Architecture
+# Model Architecture (Mini - matches RTL)
 # -----------------------------------------------------------------------------
 model:
-  # Generator (1D U-Net)
+  # Generator (Mini U-Net) - matches rtl/generator_mini.v
+  # Architecture: Input[2×16] → Enc[4×8] → Bneck[8×4] → Dec[4×8] → Out[2×16]
   generator:
     input_channels: 2         # I and Q components
     output_channels: 2
-    base_channels: 32         # Base channel width
-    depth: 5                  # Number of encoder/decoder levels
+    frame_length: 16          # Mini frame length
+    # Channel progression: 2 → 4 → 8 → 4 → 2
+    enc1_channels: 4          # Encoder 1 output
+    bottleneck_channels: 8    # Bottleneck output
+    dec1_channels: 4          # Decoder 1 output
     kernel_size: 3
     activation: "leaky_relu"
     leaky_slope: 0.2
     output_activation: "tanh"
-    use_skip_add: true        # Additive skip connections (not concat)
+    use_skip_add: true        # Additive skip connections
     
-  # Discriminator (1D CNN Critic)
+  # Discriminator (Mini CNN Critic) - matches rtl/discriminator_mini.v
+  # Architecture: Input[4×16] → Conv1[8×8] → Conv2[16×4] → Pool → Dense[1]
   discriminator:
     input_channels: 4         # Conditional: candidate(2) + condition(2)
-    base_channels: 32
-    num_layers: 6
+    frame_length: 16          # Mini frame length
+    # Channel progression: 4 → 8 → 16 → 1
+    conv1_channels: 8
+    conv2_channels: 16
     kernel_size: 3
     activation: "leaky_relu"
     leaky_slope: 0.2
@@ -53,14 +61,14 @@ model:
 # -----------------------------------------------------------------------------
 training:
   # Basic settings
-  batch_size: 32
-  epochs: 200
+  batch_size: 64              # Larger batch for small model
+  epochs: 500                 # More epochs for small model
   
   # Optimizer settings
   optimizer:
     type: "adam"
-    lr_generator: 1e-4
-    lr_discriminator: 1e-4
+    lr_generator: 2e-4        # Slightly higher LR for small model
+    lr_discriminator: 2e-4
     betas: [0.0, 0.9]         # WGAN-GP typically uses beta1=0
     weight_decay: 0
   
@@ -76,11 +84,11 @@ training:
   # Learning rate scheduling
   scheduler:
     type: "step"
-    step_size: 50
+    step_size: 100
     gamma: 0.5
     
   # Checkpointing
-  checkpoint_interval: 10
+  checkpoint_interval: 50
   save_best: true
 
 # -----------------------------------------------------------------------------
@@ -88,19 +96,22 @@ training:
 # -----------------------------------------------------------------------------
 quantization:
   enabled: true
-  weight_bits: 8              # INT8 weights
-  activation_bits: 16         # INT16 activations
-  accumulator_bits: 32        # INT32 accumulators
+  weight_bits: 8              # Q1.7 weights
+  activation_bits: 16         # Q8.8 activations
+  accumulator_bits: 32        # Q16.16 accumulators
   per_channel_scale: true     # Per-channel quantization scales
   
 # -----------------------------------------------------------------------------
-# FPGA Target Specifications
+# FPGA Target Specifications (Mini Architecture)
 # -----------------------------------------------------------------------------
 fpga:
-  target_device: "Xilinx_ZCU104"  # Target FPGA board
-  clock_freq_mhz: 200         # Target clock frequency
-  dsp_slices: 1728            # Available DSP48 slices
-  bram_kb: 11000              # Available BRAM in KB
+  target_device: "Xilinx_Artix7"  # Smaller FPGA target
+  clock_freq_mhz: 100         # Target clock frequency
+  # Resource estimates for mini architecture:
+  # Generator: ~6 DSPs, ~2 BRAMs, ~2500 FFs, ~3500 LUTs
+  # Discriminator: ~6 DSPs, ~2 BRAMs, ~2000 FFs, ~3000 LUTs
+  dsp_slices: 12
+  bram_kb: 4
   
 # -----------------------------------------------------------------------------
 # Data Paths

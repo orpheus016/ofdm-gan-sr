@@ -1,83 +1,32 @@
 # =============================================================================
 # CWGAN-GP for OFDM Signal Reconstruction
-# Generator Model: 1D U-Net with Additive Skip Connections
+# Generator Model: Mini 1D U-Net for FPGA Deployment
 # =============================================================================
 """
-MATHEMATICAL FOUNDATION
-=======================
+MINI ARCHITECTURE FOR RTL
+=========================
 
-1D U-Net Generator Architecture:
---------------------------------
-The generator G: ℝ^(2×L) → ℝ^(2×L) transforms noisy OFDM I/Q samples to enhanced samples.
+This is a compact U-Net generator designed for FPGA implementation.
+The architecture matches the RTL implementation in rtl/generator_mini.v
 
-For input x ∈ ℝ^(2×1024) (I and Q channels, 1024 samples):
+Architecture:
+    Input [2×16] → Enc1 [4×8] → Bottleneck [8×4] → Dec1 [4×8] → Output [2×16]
+                   ↓                                    ↑
+                   └──────── Skip Connection ───────────┘
 
-ENCODER (Downsampling Path):
-----------------------------
-Each encoder block E_i applies:
-    E_i(x) = LeakyReLU(Conv1D_s1(LeakyReLU(Conv1D_s2(x))))
+Parameters:
+    - Frame length: 16 samples
+    - Channels: 2 → 4 → 8 → 4 → 2
+    - Kernel size: 3
+    - Stride: 2 for encoder, 1 for decoder
 
-Where:
-- Conv1D_s2: Strided convolution with stride=2 (downsamples by 2x)
-- Conv1D_s1: Standard convolution with stride=1
-- LeakyReLU(x) = max(αx, x), where α = 0.2
+Fixed-Point (for FPGA):
+    - Weights: Q1.7 (8-bit signed)
+    - Activations: Q8.8 (16-bit signed)
+    - Accumulator: Q16.16 (32-bit)
 
-Mathematical operation for Conv1D:
-    y[n] = Σ_{k=0}^{K-1} w[k] · x[s·n + k] + b
-
-Where:
-- K = 3 (kernel size)
-- s = stride (1 or 2)
-- w = learned weights
-- b = bias
-
-BOTTLENECK:
------------
-    B(x) = LeakyReLU(Conv1D(LeakyReLU(Conv1D(x))))
-
-Two consecutive convolutions at the lowest resolution (L/32 = 32 samples).
-
-DECODER (Upsampling Path):
---------------------------
-Each decoder block D_i applies:
-    D_i(x, skip) = LeakyReLU(Conv1D(LeakyReLU(Conv1D(Upsample(x) + skip))))
-
-Where:
-- Upsample: Nearest neighbor upsampling by factor 2
-    Upsample(x)[2n] = Upsample(x)[2n+1] = x[n]
-- Skip connection uses ADDITION (not concatenation):
-    merged = upsampled + encoder_output
-
-FINAL PROJECTION:
------------------
-    out = tanh(Conv1D_1×1(decoder_output))
-
-The tanh activation constrains output to [-1, 1] for normalized I/Q values.
-
-SKIP CONNECTIONS (Additive):
-----------------------------
-Skip connections preserve high-frequency details:
-    E_i output → D_{6-i} input (via addition)
-
-Addition preserves gradient flow and requires matching channel dimensions,
-which is ensured by the symmetric architecture.
-
-CHANNEL PROGRESSION:
---------------------
-Level   Encoder Ch      Decoder Ch      Length
-0       2 → 32          32 → 2          1024
-1       32 → 64         64 → 32         512
-2       64 → 128        128 → 64        256
-3       128 → 256       256 → 128       128
-4       256 → 512       512 → 256       64
-BN      512 → 512       -               32
-
-PARAMETER COUNT:
-----------------
-Total parameters: ~5.5M
-Total MACs per frame: ~365M
-
-For detailed layer-by-layer breakdown, see docs/architecture.md
+Total Parameters: ~744
+Total MACs/Frame: ~5,000
 """
 
 import torch
@@ -91,12 +40,6 @@ class ConvBlock(nn.Module):
     
     Mathematical operation:
         y = LeakyReLU(Conv1D(x))
-        
-    Where Conv1D computes:
-        y[n] = Σ_{k=0}^{K-1} w[k] · x[s·n + k - pad] + b
-        
-    And LeakyReLU:
-        LeakyReLU(x) = x if x > 0 else α·x, with α = 0.2
     """
     
     def __init__(
@@ -120,7 +63,6 @@ class ConvBlock(nn.Module):
         )
         self.activation = nn.LeakyReLU(negative_slope=leaky_slope)
         
-        # Store for documentation
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -138,470 +80,188 @@ class ConvBlock(nn.Module):
         return self.kernel_size * self.in_channels * self.out_channels * output_length
 
 
-class EncoderBlock(nn.Module):
+class MiniGenerator(nn.Module):
     """
-    Encoder block: Downsample by 2x using strided convolution.
+    Mini U-Net Generator for FPGA deployment.
     
-    Architecture:
-        Conv1D(stride=2) → LeakyReLU → Conv1D(stride=1) → LeakyReLU
-        
-    Input shape: [B, C_in, L]
-    Output shape: [B, C_out, L/2]
-    
-    Mathematical description:
-        Let x ∈ ℝ^(C_in × L), then:
-        h = LeakyReLU(W_1 * x + b_1)     # Strided conv, output: ℝ^(C_out × L/2)
-        y = LeakyReLU(W_2 * h + b_2)     # Standard conv, output: ℝ^(C_out × L/2)
-        
-    Where * denotes 1D convolution.
-    """
-    
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int = 3,
-        leaky_slope: float = 0.2
-    ):
-        super(EncoderBlock, self).__init__()
-        
-        # Strided convolution for downsampling
-        self.conv1 = ConvBlock(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=2,
-            padding=1,
-            leaky_slope=leaky_slope
-        )
-        
-        # Standard convolution
-        self.conv2 = ConvBlock(
-            in_channels=out_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=1,
-            padding=1,
-            leaky_slope=leaky_slope
-        )
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.conv1(x)
-        x = self.conv2(x)
-        return x
-
-
-class DecoderBlock(nn.Module):
-    """
-    Decoder block: Upsample by 2x and add skip connection.
-    
-    Architecture:
-        Upsample(×2) → Add(skip) → Conv1D → LeakyReLU → Conv1D → LeakyReLU
-        
-    Input shape: [B, C_in, L]
-    Skip shape: [B, C_in, 2L]  (must match after upsampling)
-    Output shape: [B, C_out, 2L]
-    
-    Mathematical description:
-        Let x ∈ ℝ^(C_in × L) and skip ∈ ℝ^(C_in × 2L), then:
-        u = Upsample(x)              # Nearest neighbor, output: ℝ^(C_in × 2L)
-        m = u + skip                  # Additive merge
-        h = LeakyReLU(W_1 * m + b_1)  # First conv
-        y = LeakyReLU(W_2 * h + b_2)  # Second conv
-        
-    Nearest Neighbor Upsampling:
-        For each sample x[n], create x'[2n] = x'[2n+1] = x[n]
-        This doubles the temporal resolution without learnable parameters.
-    """
-    
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int = 3,
-        leaky_slope: float = 0.2
-    ):
-        super(DecoderBlock, self).__init__()
-        
-        # Nearest neighbor upsampling (no learnable params)
-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
-        
-        # Two convolutions after merge
-        self.conv1 = ConvBlock(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=1,
-            padding=1,
-            leaky_slope=leaky_slope
-        )
-        
-        self.conv2 = ConvBlock(
-            in_channels=out_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=1,
-            padding=1,
-            leaky_slope=leaky_slope
-        )
-        
-    def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
-        # Upsample input
-        x = self.upsample(x)
-        
-        # Additive skip connection
-        x = x + skip
-        
-        # Convolutional processing
-        x = self.conv1(x)
-        x = self.conv2(x)
-        
-        return x
-
-
-class UNetGenerator(nn.Module):
-    """
-    1D U-Net Generator for OFDM Signal Enhancement
-    
-    Architecture Overview:
-    =====================
-    
-    Input: Noisy I/Q signal x ∈ ℝ^(2×1024)
-    Output: Enhanced I/Q signal ŷ ∈ ℝ^(2×1024)
-    
-    The network learns the mapping: G(x) = ŷ ≈ y (clean signal)
-    
-    Structure:
-    ----------
-                     ┌─────────────────────────────────────┐
-    Input ──► Enc1 ──┼──► Enc2 ──┼──► Enc3 ──┼──► Enc4 ──┼──► Enc5 ──► Bottleneck
-              │      │    │      │    │      │    │      │    │           │
-              │      │    │      │    │      │    │      │    │           │
-              ▼      │    ▼      │    ▼      │    ▼      │    ▼           │
-             Skip1   │  Skip2   │  Skip3   │  Skip4   │  Skip5          │
-              │      │    │      │    │      │    │      │    │           │
-              │      │    │      │    │      │    │      │    │           ▼
-              └──────┼────┼──────┼────┼──────┼────┼──────┼────┼─────► Dec5
-                     │    └──────┼────┼──────┼────┼──────┼────┼─────► Dec4
-                     │           │    └──────┼────┼──────┼────┼─────► Dec3
-                     │           │           │    └──────┼────┼─────► Dec2
-                     │           │           │           │    └─────► Dec1
-                     │           │           │           │             │
-                     │           │           │           │             ▼
-                     │           │           │           │          Final Conv
-                     │           │           │           │             │
-                     │           │           │           │             ▼
-                     │           │           │           │           Output
+    This matches the RTL implementation with:
+    - 16-sample frame length
+    - 3-level U-Net (Enc1 → Bottleneck → Dec1)
+    - Channel progression: 2 → 4 → 8 → 4 → 2
+    - Additive skip connections
     
     Layer Specifications:
     ---------------------
-    | Layer    | Input Ch | Output Ch | Length In | Length Out | Params   |
-    |----------|----------|-----------|-----------|------------|----------|
-    | enc1_1   | 2        | 32        | 1024      | 512        | 608      |
-    | enc1_2   | 32       | 32        | 512       | 512        | 3,104    |
-    | enc2_1   | 32       | 64        | 512       | 256        | 12,416   |
-    | enc2_2   | 64       | 64        | 256       | 256        | 49,216   |
-    | enc3_1   | 64       | 128       | 256       | 128        | 98,560   |
-    | enc3_2   | 128      | 128       | 128       | 128        | 196,864  |
-    | enc4_1   | 128      | 256       | 128       | 64         | 393,472  |
-    | enc4_2   | 256      | 256       | 64        | 64         | 786,688  |
-    | enc5_1   | 256      | 512       | 64        | 32         | 1,572,864|
-    | enc5_2   | 512      | 512       | 32        | 32         | 3,145,728|
-    | bottle1  | 512      | 512       | 32        | 32         | 3,145,728|
-    | bottle2  | 512      | 512       | 32        | 32         | 3,145,728|
-    | dec5_1   | 512      | 512       | 64        | 64         | 3,145,728|
-    | dec5_2   | 512      | 512       | 64        | 64         | 3,145,728|
-    | dec4_1   | 512      | 256       | 128       | 128        | 1,572,864|
-    | dec4_2   | 256      | 256       | 128       | 128        | 786,688  |
-    | dec3_1   | 256      | 128       | 256       | 256        | 393,472  |
-    | dec3_2   | 128      | 128       | 256       | 256        | 196,864  |
-    | dec2_1   | 128      | 64        | 512       | 512        | 98,560   |
-    | dec2_2   | 64       | 64        | 512       | 512        | 49,216   |
-    | dec1_1   | 64       | 32        | 1024      | 1024       | 12,416   |
-    | dec1_2   | 32       | 32        | 1024      | 1024       | 3,104    |
-    | final    | 32       | 2         | 1024      | 1024       | 194      |
-    |----------|----------|-----------|-----------|------------|----------|
-    | TOTAL    |          |           |           |            | ~5.50M   |
+    | Layer      | In Ch | Out Ch | Stride | L_out | Params | MACs   |
+    |------------|-------|--------|--------|-------|--------|--------|
+    | Enc1       | 2     | 4      | 2      | 8     | 28     | 192    |
+    | Bottleneck | 4     | 8      | 2      | 4     | 104    | 384    |
+    | Dec1       | 8     | 4      | 1      | 8     | 100    | 768    |
+    | OutConv    | 4     | 2      | 1      | 16    | 26     | 384    |
+    |------------|-------|--------|--------|-------|--------|--------|
+    | TOTAL      |       |        |        |       | 258    | 1,728  |
     
-    Memory Requirements (for skip buffers):
-    ----------------------------------------
-    Skip Level | Channels | Length | Elements | Bytes (INT16)
-    E1         | 32       | 512    | 16,384   | 32,768
-    E2         | 64       | 256    | 16,384   | 32,768
-    E3         | 128      | 128    | 16,384   | 32,768
-    E4         | 256      | 64     | 16,384   | 32,768
-    E5         | 512      | 32     | 16,384   | 32,768
-    ---------------------------------------------------------
-    Total skip buffer memory: 163,840 bytes (~160 KB)
+    Note: Skip connection adds Enc1 output to Dec1 output (after upsample)
     """
     
     def __init__(
         self,
         input_channels: int = 2,
         output_channels: int = 2,
-        base_channels: int = 32,
-        depth: int = 5,
-        kernel_size: int = 3,
+        frame_length: int = 16,
         leaky_slope: float = 0.2
     ):
-        super(UNetGenerator, self).__init__()
+        super(MiniGenerator, self).__init__()
         
         self.input_channels = input_channels
         self.output_channels = output_channels
-        self.base_channels = base_channels
-        self.depth = depth
+        self.frame_length = frame_length
         
-        # Channel progression: [32, 64, 128, 256, 512]
-        channels = [base_channels * (2 ** i) for i in range(depth)]
+        # Encoder 1: 2 → 4 channels, stride=2, output length = 8
+        self.enc1 = ConvBlock(
+            in_channels=input_channels,
+            out_channels=4,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            leaky_slope=leaky_slope
+        )
         
-        # ===========================================
-        # ENCODER (Downsampling Path)
-        # ===========================================
+        # Bottleneck: 4 → 8 channels, stride=2, output length = 4
+        self.bottleneck = ConvBlock(
+            in_channels=4,
+            out_channels=8,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            leaky_slope=leaky_slope
+        )
         
-        # E1: [B, 2, 1024] → [B, 32, 512]
-        self.enc1_1 = nn.Conv1d(input_channels, channels[0], kernel_size, stride=2, padding=1)
-        self.enc1_2 = nn.Conv1d(channels[0], channels[0], kernel_size, stride=1, padding=1)
+        # Upsample 1: Nearest neighbor ×2 (4 → 8 samples)
+        self.upsample1 = nn.Upsample(scale_factor=2, mode='nearest')
         
-        # E2: [B, 32, 512] → [B, 64, 256]
-        self.enc2_1 = nn.Conv1d(channels[0], channels[1], kernel_size, stride=2, padding=1)
-        self.enc2_2 = nn.Conv1d(channels[1], channels[1], kernel_size, stride=1, padding=1)
+        # Decoder 1: 8 → 4 channels, stride=1, output length = 8
+        self.dec1 = ConvBlock(
+            in_channels=8,
+            out_channels=4,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            leaky_slope=leaky_slope
+        )
         
-        # E3: [B, 64, 256] → [B, 128, 128]
-        self.enc3_1 = nn.Conv1d(channels[1], channels[2], kernel_size, stride=2, padding=1)
-        self.enc3_2 = nn.Conv1d(channels[2], channels[2], kernel_size, stride=1, padding=1)
+        # Upsample 2: Nearest neighbor ×2 (8 → 16 samples)
+        self.upsample2 = nn.Upsample(scale_factor=2, mode='nearest')
         
-        # E4: [B, 128, 128] → [B, 256, 64]
-        self.enc4_1 = nn.Conv1d(channels[2], channels[3], kernel_size, stride=2, padding=1)
-        self.enc4_2 = nn.Conv1d(channels[3], channels[3], kernel_size, stride=1, padding=1)
+        # Output convolution: 4 → 2 channels
+        self.out_conv = nn.Conv1d(
+            in_channels=4,
+            out_channels=output_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=True
+        )
         
-        # E5: [B, 256, 64] → [B, 512, 32]
-        self.enc5_1 = nn.Conv1d(channels[3], channels[4], kernel_size, stride=2, padding=1)
-        self.enc5_2 = nn.Conv1d(channels[4], channels[4], kernel_size, stride=1, padding=1)
-        
-        # ===========================================
-        # BOTTLENECK
-        # ===========================================
-        
-        # B: [B, 512, 32] → [B, 512, 32]
-        self.bottle1 = nn.Conv1d(channels[4], channels[4], kernel_size, stride=1, padding=1)
-        self.bottle2 = nn.Conv1d(channels[4], channels[4], kernel_size, stride=1, padding=1)
-        
-        # ===========================================
-        # DECODER (Upsampling Path with Additive Skips)
-        # ===========================================
-        
-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
-        
-        # D5: [B, 512, 32] → [B, 256, 64] (upsample to 64, reduce channels to match e4)
-        self.dec1_1 = nn.Conv1d(channels[4], channels[3], kernel_size, stride=1, padding=1)
-        self.dec1_2 = nn.Conv1d(channels[3], channels[3], kernel_size, stride=1, padding=1)
-        
-        # D4: [B, 256, 64] → [B, 128, 128] (after upsample + skip_e4)
-        self.dec2_1 = nn.Conv1d(channels[3], channels[2], kernel_size, stride=1, padding=1)
-        self.dec2_2 = nn.Conv1d(channels[2], channels[2], kernel_size, stride=1, padding=1)
-        
-        # D3: [B, 128, 128] → [B, 64, 256] (after upsample + skip_e3)
-        self.dec3_1 = nn.Conv1d(channels[2], channels[1], kernel_size, stride=1, padding=1)
-        self.dec3_2 = nn.Conv1d(channels[1], channels[1], kernel_size, stride=1, padding=1)
-        
-        # D2: [B, 64, 256] → [B, 32, 512] (after upsample + skip_e2)
-        self.dec4_1 = nn.Conv1d(channels[1], channels[0], kernel_size, stride=1, padding=1)
-        self.dec4_2 = nn.Conv1d(channels[0], channels[0], kernel_size, stride=1, padding=1)
-        
-        # D1: [B, 32, 512] → [B, 32, 1024] (after upsample + skip_e1)
-        self.dec5_1 = nn.Conv1d(channels[0], channels[0], kernel_size, stride=1, padding=1)
-        self.dec5_2 = nn.Conv1d(channels[0], channels[0], kernel_size, stride=1, padding=1)
-        
-        # ===========================================
-        # FINAL PROJECTION
-        # ===========================================
-        
-        # Final: [B, 32, 1024] → [B, 2, 1024]
-        self.final = nn.Conv1d(channels[0], output_channels, kernel_size, stride=1, padding=1)
-        
-        # Activations
-        self.lrelu = nn.LeakyReLU(negative_slope=leaky_slope)
+        # Final activation (tanh for normalized output)
         self.tanh = nn.Tanh()
         
+        # Initialize weights
+        self._initialize_weights()
+        
+    def _initialize_weights(self):
+        """Initialize weights using Xavier/Glorot initialization."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass through the U-Net generator.
+        Forward pass through the mini U-Net.
         
         Args:
-            x: Noisy I/Q signal, shape [B, 2, L] where L=1024
+            x: Input tensor of shape [B, 2, 16]
             
         Returns:
-            Enhanced I/Q signal, shape [B, 2, L]
-            
-        Mathematical flow:
-            1. Encoder: Extract hierarchical features with progressive downsampling
-            2. Bottleneck: Process at lowest resolution (highest abstraction)
-            3. Decoder: Upsample and merge with skip connections to recover details
-            4. Final: Project back to I/Q space with tanh normalization
+            Output tensor of shape [B, 2, 16]
         """
+        # Encoder
+        enc1_out = self.enc1(x)          # [B, 4, 8]
         
-        # =================== ENCODER ===================
-        # E1: 2×1024 → 32×512
-        x = self.lrelu(self.enc1_1(x))
-        e1 = self.lrelu(self.enc1_2(x))  # Skip connection source
+        # Bottleneck
+        bneck_out = self.bottleneck(enc1_out)  # [B, 8, 4]
         
-        # E2: 32×512 → 64×256
-        x = self.lrelu(self.enc2_1(e1))
-        e2 = self.lrelu(self.enc2_2(x))  # Skip connection source
+        # Decoder with skip connection
+        up1 = self.upsample1(bneck_out)   # [B, 8, 8]
+        dec1_out = self.dec1(up1)         # [B, 4, 8]
         
-        # E3: 64×256 → 128×128
-        x = self.lrelu(self.enc3_1(e2))
-        e3 = self.lrelu(self.enc3_2(x))  # Skip connection source
+        # Skip connection (additive)
+        skip_out = dec1_out + enc1_out    # [B, 4, 8]
         
-        # E4: 128×128 → 256×64
-        x = self.lrelu(self.enc4_1(e3))
-        e4 = self.lrelu(self.enc4_2(x))  # Skip connection source
-        
-        # E5: 256×64 → 512×32
-        x = self.lrelu(self.enc5_1(e4))
-        e5 = self.lrelu(self.enc5_2(x))  # Skip connection source
-        
-        # =================== BOTTLENECK ===================
-        # B: 512×32 → 512×32
-        b = self.lrelu(self.bottle1(e5))
-        b = self.lrelu(self.bottle2(b))
-        
-        # =================== DECODER ===================
-        # D5: 512×32 → 256×64 (upsample and reduce channels to match e4)
-        d5 = self.upsample(b)
-        d5 = self.lrelu(self.dec1_1(d5))
-        d5 = d5 + e4  # Additive skip connection (both 256×64)
-        d5 = self.lrelu(self.dec1_2(d5))
-        
-        # D4: 256×64 → 128×128 (upsample + add skip_e3)
-        d4 = self.upsample(d5)
-        d4 = self.lrelu(self.dec2_1(d4))
-        d4 = d4 + e3  # Additive skip connection (both 128×128)
-        d4 = self.lrelu(self.dec2_2(d4))
-        
-        # D3: 128×128 → 64×256 (upsample + add skip_e2)
-        d3 = self.upsample(d4)
-        d3 = self.lrelu(self.dec3_1(d3))
-        d3 = d3 + e2  # Additive skip connection (both 64×256)
-        d3 = self.lrelu(self.dec3_2(d3))
-        
-        # D2: 64×256 → 32×512 (upsample + add skip_e1)
-        d2 = self.upsample(d3)
-        d2 = self.lrelu(self.dec4_1(d2))
-        d2 = d2 + e1  # Additive skip connection (both 32×512)
-        d2 = self.lrelu(self.dec4_2(d2))
-        
-        # D1: 32×512 → 32×1024 (final upsample, no skip)
-        d1 = self.upsample(d2)
-        d1 = self.lrelu(self.dec5_1(d1))
-        d1 = self.lrelu(self.dec5_2(d1))
-        
-        # =================== FINAL ===================
-        # Final: 32×1024 → 2×1024
-        out = self.tanh(self.final(d1))
+        # Final upsampling and output
+        up2 = self.upsample2(skip_out)    # [B, 4, 16]
+        out = self.out_conv(up2)          # [B, 2, 16]
+        out = self.tanh(out)              # [B, 2, 16]
         
         return out
     
     def get_layer_info(self) -> List[dict]:
-        """
-        Get detailed information about each layer.
-        
-        Returns:
-            List of dictionaries containing layer specifications.
-        """
-        layers = [
-            {"name": "enc1_1", "in_ch": 2, "out_ch": 32, "stride": 2, "L_out": 512},
-            {"name": "enc1_2", "in_ch": 32, "out_ch": 32, "stride": 1, "L_out": 512},
-            {"name": "enc2_1", "in_ch": 32, "out_ch": 64, "stride": 2, "L_out": 256},
-            {"name": "enc2_2", "in_ch": 64, "out_ch": 64, "stride": 1, "L_out": 256},
-            {"name": "enc3_1", "in_ch": 64, "out_ch": 128, "stride": 2, "L_out": 128},
-            {"name": "enc3_2", "in_ch": 128, "out_ch": 128, "stride": 1, "L_out": 128},
-            {"name": "enc4_1", "in_ch": 128, "out_ch": 256, "stride": 2, "L_out": 64},
-            {"name": "enc4_2", "in_ch": 256, "out_ch": 256, "stride": 1, "L_out": 64},
-            {"name": "enc5_1", "in_ch": 256, "out_ch": 512, "stride": 2, "L_out": 32},
-            {"name": "enc5_2", "in_ch": 512, "out_ch": 512, "stride": 1, "L_out": 32},
-            {"name": "bottle1", "in_ch": 512, "out_ch": 512, "stride": 1, "L_out": 32},
-            {"name": "bottle2", "in_ch": 512, "out_ch": 512, "stride": 1, "L_out": 32},
-            {"name": "dec1_1", "in_ch": 512, "out_ch": 512, "stride": 1, "L_out": 64},
-            {"name": "dec1_2", "in_ch": 512, "out_ch": 512, "stride": 1, "L_out": 64},
-            {"name": "dec2_1", "in_ch": 512, "out_ch": 256, "stride": 1, "L_out": 128},
-            {"name": "dec2_2", "in_ch": 256, "out_ch": 256, "stride": 1, "L_out": 128},
-            {"name": "dec3_1", "in_ch": 256, "out_ch": 128, "stride": 1, "L_out": 256},
-            {"name": "dec3_2", "in_ch": 128, "out_ch": 128, "stride": 1, "L_out": 256},
-            {"name": "dec4_1", "in_ch": 128, "out_ch": 64, "stride": 1, "L_out": 512},
-            {"name": "dec4_2", "in_ch": 64, "out_ch": 64, "stride": 1, "L_out": 512},
-            {"name": "dec5_1", "in_ch": 64, "out_ch": 32, "stride": 1, "L_out": 1024},
-            {"name": "dec5_2", "in_ch": 32, "out_ch": 32, "stride": 1, "L_out": 1024},
-            {"name": "final", "in_ch": 32, "out_ch": 2, "stride": 1, "L_out": 1024},
+        """Get information about each layer for documentation."""
+        return [
+            {"name": "enc1", "in_ch": 2, "out_ch": 4, "stride": 2, "length": 8},
+            {"name": "bottleneck", "in_ch": 4, "out_ch": 8, "stride": 2, "length": 4},
+            {"name": "upsample1", "scale": 2, "length": 8},
+            {"name": "dec1", "in_ch": 8, "out_ch": 4, "stride": 1, "length": 8},
+            {"name": "skip_add", "channels": 4, "length": 8},
+            {"name": "upsample2", "scale": 2, "length": 16},
+            {"name": "out_conv", "in_ch": 4, "out_ch": 2, "stride": 1, "length": 16},
+            {"name": "tanh", "length": 16},
         ]
-        
-        K = 3  # Kernel size
-        for layer in layers:
-            # Parameters = K * C_in * C_out + C_out (bias)
-            layer["params"] = K * layer["in_ch"] * layer["out_ch"] + layer["out_ch"]
-            # MACs = K * C_in * C_out * L_out
-            layer["macs"] = K * layer["in_ch"] * layer["out_ch"] * layer["L_out"]
-            
-        return layers
     
-    def count_parameters(self) -> Tuple[int, int]:
-        """
-        Count total trainable parameters and compute total MACs.
-        
-        Returns:
-            Tuple of (total_params, total_macs)
-        """
-        layers = self.get_layer_info()
-        total_params = sum(l["params"] for l in layers)
-        total_macs = sum(l["macs"] for l in layers)
-        return total_params, total_macs
+    def count_parameters(self) -> int:
+        """Count total trainable parameters."""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    
+    def estimate_macs(self) -> int:
+        """Estimate multiply-accumulate operations per forward pass."""
+        # enc1: 3 * 2 * 4 * 8 = 192
+        # bottleneck: 3 * 4 * 8 * 4 = 384
+        # dec1: 3 * 8 * 4 * 8 = 768
+        # out_conv: 3 * 4 * 2 * 16 = 384
+        return 192 + 384 + 768 + 384
 
 
-# =============================================================================
-# Verification
-# =============================================================================
+# Alias for backward compatibility
+UNetGenerator = MiniGenerator
+
+
+def create_generator(config: dict = None) -> MiniGenerator:
+    """Factory function to create generator from config."""
+    if config is None:
+        config = {}
+    
+    return MiniGenerator(
+        input_channels=config.get('input_channels', 2),
+        output_channels=config.get('output_channels', 2),
+        frame_length=config.get('frame_length', 16),
+        leaky_slope=config.get('leaky_slope', 0.2)
+    )
+
+
 if __name__ == "__main__":
-    print("=" * 60)
-    print("U-Net Generator Architecture Verification")
-    print("=" * 60)
+    # Test the model
+    model = MiniGenerator()
+    print(f"Mini Generator Architecture")
+    print(f"=" * 50)
+    print(f"Total parameters: {model.count_parameters():,}")
+    print(f"Estimated MACs: {model.estimate_macs():,}")
+    print()
     
-    # Create model
-    L = 1024
-    gen = UNetGenerator()
-    
-    # Create test input
-    noisy_input = torch.randn(1, 2, L)
-    
-    # Forward pass
-    print(f"\nInput shape: {noisy_input.shape}")
-    output = gen(noisy_input)
-    print(f"Output shape: {output.shape}")
-    
-    # Verify shapes
-    assert output.shape == (1, 2, L), "Output shape mismatch!"
-    print("✓ Shape verification passed")
-    
-    # Count parameters
-    total_params, total_macs = gen.count_parameters()
-    print(f"\nTotal parameters: {total_params:,} (~{total_params/1e6:.2f}M)")
-    print(f"Total MACs per frame: {total_macs:,} (~{total_macs/1e6:.1f}M)")
-    
-    # PyTorch parameter count (for verification)
-    pytorch_params = sum(p.numel() for p in gen.parameters())
-    print(f"PyTorch parameter count: {pytorch_params:,}")
-    
-    # Layer-by-layer breakdown
-    print("\n" + "=" * 60)
-    print("Layer-by-Layer Breakdown")
-    print("=" * 60)
-    print(f"{'Layer':<12} {'In→Out':<12} {'L_out':<8} {'Params':<12} {'MACs':<12}")
-    print("-" * 60)
-    
-    for layer in gen.get_layer_info():
-        print(f"{layer['name']:<12} {layer['in_ch']}→{layer['out_ch']:<8} "
-              f"{layer['L_out']:<8} {layer['params']:<12,} {layer['macs']:<12,}")
-    
-    print("-" * 60)
-    print(f"{'TOTAL':<12} {'':<12} {'':<8} {total_params:<12,} {total_macs:<12,}")
-    
-    print("\n✓ Generator verification complete!")
+    # Test forward pass
+    x = torch.randn(1, 2, 16)
+    y = model(x)
+    print(f"Input shape:  {x.shape}")
+    print(f"Output shape: {y.shape}")
+    print(f"Output range: [{y.min():.3f}, {y.max():.3f}]")

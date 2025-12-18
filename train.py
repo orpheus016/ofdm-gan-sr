@@ -53,8 +53,8 @@ import numpy as np
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from models.generator import UNetGenerator
-from models.discriminator import Discriminator, compute_gradient_penalty
+from models.generator import MiniGenerator
+from models.discriminator import MiniDiscriminator, compute_gradient_penalty
 from utils.dataset import SyntheticOFDMDataset, OFDMDataset, create_dataloader
 from utils.quantization import export_weights_fpga, QuantizationConfig
 
@@ -74,8 +74,8 @@ class CWGANGPTrainer:
     
     def __init__(
         self,
-        generator: UNetGenerator,
-        discriminator: Discriminator,
+        generator: MiniGenerator,
+        discriminator: MiniDiscriminator,
         train_loader: DataLoader,
         val_loader: Optional[DataLoader] = None,
         device: torch.device = None,
@@ -85,8 +85,8 @@ class CWGANGPTrainer:
         Initialize trainer.
         
         Args:
-            generator: U-Net generator model
-            discriminator: Critic model
+            generator: Mini U-Net generator model
+            discriminator: Mini Critic model
             train_loader: Training data loader
             val_loader: Validation data loader (optional)
             device: Computation device
@@ -591,7 +591,7 @@ def main():
         
         # Create model and load checkpoint
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        generator = UNetGenerator()
+        generator = MiniGenerator()
         checkpoint = torch.load(ckpt_path, map_location=device)
         generator.load_state_dict(checkpoint['generator_state_dict'])
         
@@ -609,8 +609,8 @@ def main():
         return
         
     # Get training params
-    batch_size = config.get('training', {}).get('batch_size', 32)
-    frame_length = config.get('ofdm', {}).get('frame_length', 1024)
+    batch_size = config.get('training', {}).get('batch_size', 64)
+    frame_length = config.get('ofdm', {}).get('frame_length', 16)  # Mini architecture: 16 samples
     
     # Create dataset
     if args.synthetic:
@@ -618,12 +618,12 @@ def main():
         train_dataset = SyntheticOFDMDataset(
             n_samples=10000,
             frame_length=frame_length,
-            snr_range=tuple(config.get('channel', {}).get('snr_range', [0, 30]))
+            snr_range=tuple(config.get('channel', {}).get('snr_range', [5, 20]))
         )
         val_dataset = SyntheticOFDMDataset(
             n_samples=1000,
             frame_length=frame_length,
-            snr_range=tuple(config.get('channel', {}).get('snr_range', [0, 30]))
+            snr_range=tuple(config.get('channel', {}).get('snr_range', [5, 20]))
         )
     else:
         # Try to load from data directory
@@ -633,8 +633,8 @@ def main():
             train_dataset = OFDMDataset(
                 image_dir=data_dir,
                 frame_length=frame_length,
-                modulation=config.get('ofdm', {}).get('modulation', 'QAM16'),
-                snr_range=tuple(config.get('channel', {}).get('snr_range', [0, 30]))
+                modulation=config.get('ofdm', {}).get('modulation', 'QPSK'),
+                snr_range=tuple(config.get('channel', {}).get('snr_range', [5, 20]))
             )
             val_dataset = None  # TODO: Add validation split
         else:
@@ -647,8 +647,8 @@ def main():
     val_loader = create_dataloader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0) if val_dataset else None
     
     # Create models
-    generator = UNetGenerator()
-    discriminator = Discriminator()
+    generator = MiniGenerator()
+    discriminator = MiniDiscriminator()
     
     print(f"Generator parameters: {sum(p.numel() for p in generator.parameters()):,}")
     print(f"Discriminator parameters: {sum(p.numel() for p in discriminator.parameters()):,}")

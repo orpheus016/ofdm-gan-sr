@@ -4,59 +4,75 @@ A Conditional Wasserstein GAN with Gradient Penalty for OFDM signal reconstructi
 
 ## Overview
 
-This project implements a 1D U-Net based GAN for enhancing noisy OFDM I/Q signals for image file transmission. The generator is designed to be deployed on FPGA for real-time signal enhancement.
+This project implements a compact 1D U-Net based GAN for enhancing noisy OFDM I/Q signals. The architecture is specifically designed for resource-constrained FPGA deployment with minimal parameters while maintaining signal reconstruction capability.
 
 ### Key Features
 
-- **1D U-Net Generator**: 5-level encoder-decoder with additive skip connections
+- **Mini U-Net Generator**: Compact encoder-decoder with additive skip connections
 - **CWGAN-GP Training**: Stable training with gradient penalty
-- **FPGA-Ready**: INT8 weight quantization, ~5.5M parameters, ~365M MACs/frame
-- **OFDM Simulation**: Complete QAM modulation, OFDM encoding, and channel simulation
-- **Comprehensive Documentation**: Full mathematical foundation for every operation
+- **FPGA-Ready**: Q1.7 weights (8-bit), Q8.8 activations (16-bit), ~800 total parameters
+- **OFDM Simulation**: QPSK modulation, OFDM encoding, and AWGN channel simulation
+- **RTL Implementation**: Complete Verilog implementation in `rtl/` folder
 
 ## Architecture
 
 ```
-Generator (1D U-Net):
-Input [2×1024] → Encoder → Bottleneck → Decoder → Output [2×1024]
+Generator (Mini U-Net):
+Input [2×16] → Encoder → Bottleneck → Decoder → Output [2×16]
      ↓              ↓                      ↑           ↑
    I/Q signal    Skip connections ─────────┘      Enhanced I/Q
 
-Discriminator (Conditional Critic):
-[Candidate + Condition] → Conv Stack → Global Sum Pool → Score
-        [4×1024]                                          [1]
+Discriminator (Mini Critic):
+[Candidate + Condition] → Conv Stack → Sum Pool → Dense → Score
+        [4×16]                                              [1]
 ```
 
-### Generator Specifications
+### Generator Specifications (Mini Architecture)
 
-| Level | Encoder Channels | Decoder Channels | Length |
-|-------|------------------|------------------|--------|
-| 0     | 2 → 32          | 32 → 2           | 1024   |
-| 1     | 32 → 64         | 64 → 32          | 512    |
-| 2     | 64 → 128        | 128 → 64         | 256    |
-| 3     | 128 → 256       | 256 → 128        | 128    |
-| 4     | 256 → 512       | 512 → 256        | 64     |
-| BN    | 512 → 512       | -                | 32     |
+| Layer      | Channels    | Kernel | Output Size |
+|------------|-------------|--------|-------------|
+| Input      | 2           | -      | 2×16        |
+| Encoder 1  | 2 → 4       | k=3    | 4×8         |
+| Bottleneck | 4 → 8       | k=3    | 8×8         |
+| Decoder 1  | 8+4 → 4     | k=3    | 4×16        |
+| Output     | 4 → 2       | k=3    | 2×16        |
 
-**Total Parameters**: ~5.5M  
-**Total MACs/Frame**: ~365M  
-**Skip Buffer Memory**: ~160KB
+**Total Generator Parameters**: ~258  
+**Total Discriminator Parameters**: ~521  
+**Total Parameters**: ~800
+
+### Discriminator Specifications (Mini Architecture)
+
+| Layer  | Channels    | Kernel | Output Size |
+|--------|-------------|--------|-------------|
+| Input  | 4           | -      | 4×16        |
+| Conv 1 | 4 → 8       | k=3    | 8×8         |
+| Conv 2 | 8 → 16      | k=3    | 16×4        |
+| Pool   | Sum Pool    | -      | 16×1        |
+| Dense  | 16 → 1      | -      | 1           |
 
 ## Project Structure
 
 ```
 ofdm-gan-sr/
 ├── config/
-│   └── config.yaml          # Configuration file
+│   └── config.yaml          # Configuration file (mini architecture)
 ├── models/
 │   ├── __init__.py
-│   ├── generator.py         # 1D U-Net Generator
-│   └── discriminator.py     # Conditional Critic
+│   ├── generator.py         # Mini U-Net Generator (258 params)
+│   └── discriminator.py     # Mini Conditional Critic (521 params)
 ├── utils/
 │   ├── __init__.py
-│   ├── ofdm_utils.py        # OFDM/QAM/Channel utilities
+│   ├── ofdm_utils.py        # OFDM/QPSK/Channel utilities
 │   ├── dataset.py           # Data loading and generation
-│   └── quantization.py      # FPGA quantization utilities
+│   ├── quantization.py      # FPGA quantization utilities
+│   └── export_mini_weights.py  # RTL weight export
+├── rtl/
+│   ├── generator_mini.v     # Verilog generator implementation
+│   ├── discriminator_mini.v # Verilog discriminator implementation
+│   ├── cwgan_gp_top.v       # Top-level RTL module
+│   ├── tb_*.v               # Testbenches
+│   └── *.v                  # Supporting RTL modules
 ├── proof/
 │   ├── __init__.py
 │   └── verification.py      # Architecture verification
@@ -66,6 +82,7 @@ ofdm-gan-sr/
 ├── docs/
 │   └── math_foundation.py   # Mathematical documentation
 ├── train.py                 # Training script
+├── training.ipynb           # Google Colab training notebook
 ├── requirements.txt         # Python dependencies
 └── README.md
 ```
@@ -97,10 +114,13 @@ pip install -r requirements.txt
 ### Training
 
 ```bash
-# Train with synthetic data
-python train.py --synthetic --epochs 100
+# Train with synthetic data (mini architecture)
+python train.py --synthetic --epochs 500 --lr 0.0002 --batch_size 64
 
-# Train with custom images
+# Train with skip export (for quick testing)
+python train.py --synthetic --epochs 500 --lr 0.0002 --batch_size 64 --skip_export
+
+# Train with custom config
 python train.py --config config/config.yaml
 
 # Resume training
@@ -110,15 +130,17 @@ python train.py --resume checkpoints/checkpoint_epoch_50.pt
 ### Verification
 
 ```python
-from models import UNetGenerator, Discriminator
-from proof import run_full_verification
+from models import MiniGenerator, MiniDiscriminator
 
 # Create models
-generator = UNetGenerator()
-discriminator = Discriminator()
+generator = MiniGenerator()
+discriminator = MiniDiscriminator()
 
-# Run verification
-results = run_full_verification(generator, discriminator)
+# Check parameter counts
+gen_params = sum(p.numel() for p in generator.parameters())
+disc_params = sum(p.numel() for p in discriminator.parameters())
+print(f"Generator: {gen_params} params")      # ~258
+print(f"Discriminator: {disc_params} params") # ~521
 ```
 
 ### Visualization
@@ -133,16 +155,16 @@ generate_all_diagrams(output_dir='./diagrams')
 ### Export for FPGA
 
 ```python
-from models import UNetGenerator
-from utils import export_weights_fpga, QuantizationConfig
+from models import MiniGenerator
+from utils.export_mini_weights import export_mini_weights
 
 # Load trained model
-generator = UNetGenerator()
+generator = MiniGenerator()
 generator.load_state_dict(torch.load('checkpoints/best_model.pt')['generator_state_dict'])
 
-# Export quantized weights
-config = QuantizationConfig(weight_bits=8, activation_bits=16)
-export_weights_fpga(generator, './export', config)
+# Export quantized weights for RTL
+export_mini_weights(generator, './export')
+# Creates: weight_rom.v with Q1.7 weights
 ```
 
 ## Mathematical Foundation
@@ -171,52 +193,68 @@ $$y[n] = \sum_{k=0}^{K-1} w[k] \cdot x[s \cdot n + k] + b$$
 
 ### Quantization
 
-**Symmetric Quantization**:
-$$scale = \frac{\max|x|}{2^{b-1} - 1}$$
-$$x_{quant} = round(clamp(x / scale, -2^{b-1}, 2^{b-1} - 1))$$
+**Fixed-Point Formats**:
+- **Weights**: Q1.7 format (8-bit signed, 7 fractional bits)
+  - Range: [-1, +0.9921875] 
+  - Resolution: 1/128 ≈ 0.0078
+- **Activations**: Q8.8 format (16-bit signed, 8 fractional bits)
+  - Range: [-128, +127.996]
+  - Resolution: 1/256 ≈ 0.0039
+
+**Weight Quantization**:
+$$w_{q1.7} = clamp(round(w \times 128), -128, 127)$$
+
+**Activation Quantization**:
+$$a_{q8.8} = clamp(round(a \times 256), -32768, 32767)$$
 
 For detailed mathematical derivations, see `docs/math_foundation.py`.
 
 ## FPGA Deployment
 
-### Resource Estimates (Xilinx ZCU104)
+### RTL Architecture
 
-| Resource | Usage | Purpose |
-|----------|-------|---------|
-| DSP48 Slices | ~100-200 | MAC operations |
-| BRAM | ~160 KB | Skip buffers |
-| DDR Bandwidth | ~165 MB/s @30fps | Weight streaming |
-| Clock Frequency | 200 MHz | Target |
+The `rtl/` folder contains complete Verilog implementation:
 
-### Throughput
+| Module | Description |
+|--------|-------------|
+| generator_mini.v | Mini U-Net generator (2→4→8→4→2) |
+| discriminator_mini.v | Mini critic (4→8→16→1) |
+| cwgan_gp_top.v | Top-level integration |
+| conv1d_engine.v | Convolution computation engine |
+| weight_rom.v | Quantized weight storage |
+| activation_lrelu.v | LeakyReLU activation |
+| activation_tanh.v | Tanh activation (LUT-based) |
+| upsample_nn.v | Nearest-neighbor upsampling |
 
-- **55 DSPs @200MHz**: ~30 fps
-- **110 DSPs @200MHz**: ~60 fps
+### Resource Estimates
 
-### Exported Files
+| Resource | Estimate | Purpose |
+|----------|----------|---------|
+| LUTs | ~2,000-4,000 | Logic |
+| FFs | ~1,000-2,000 | Registers |
+| DSP48 | 4-8 | MAC operations |
+| BRAM | ~1-2 KB | Weight/activation storage |
 
-After `export_weights_fpga()`:
-```
-export/
-├── generator/
-│   ├── enc1_1_weights.bin     # INT8 weights
-│   ├── enc1_1_scale.bin       # Per-channel scales
-│   ├── enc1_1_bias.bin        # FP32 biases
-│   ├── ...
-│   └── metadata.json          # Layer specifications + CRCs
+### Simulation
+
+```powershell
+cd rtl
+# Run generator testbench
+iverilog -o tb_generator_mini.vvp tb_generator_mini.v generator_mini.v ...
+vvp tb_generator_mini.vvp
+
+# Run discriminator testbench
+iverilog -o tb_discriminator_mini.vvp tb_discriminator_mini.v ...
+vvp tb_discriminator_mini.vvp
 ```
 
 ## Testing
 
 ```bash
-# Run architecture verification
-python -m proof.verification
+# Test mini architecture shapes and RTL compatibility
+python test_models.py
 
-# Verify model shapes
-python -m models.generator
-python -m models.discriminator
-
-# Test OFDM utilities
+# Run OFDM utilities test
 python -m utils.ofdm_utils
 
 # Generate visualizations
@@ -229,24 +267,36 @@ Edit `config/config.yaml` to customize:
 
 ```yaml
 ofdm:
-  frame_length: 1024
-  modulation: "QAM16"
+  frame_length: 16        # Mini: 16 samples (matches RTL)
+  n_subcarriers: 8
+  modulation: "QPSK"
 
 channel:
-  snr_range: [0, 30]
+  snr_range: [5, 20]
   channel_type: "awgn"
 
+generator:
+  # Mini architecture: 2→4→8→4→2
+  encoder_channels: [2, 4]
+  bottleneck_channels: 8
+  decoder_channels: [4, 2]
+  kernel_size: 3
+
+discriminator:
+  # Mini architecture: 4→8→16→1
+  channels: [4, 8, 16]
+  kernel_size: 3
+
 training:
-  epochs: 200
-  batch_size: 32
+  epochs: 500
+  batch_size: 64
+  learning_rate: 0.0002
   n_critic: 5
   gp_weight: 10.0
-  loss:
-    reconstruction_weight: 100.0
 
 quantization:
-  weight_bits: 8
-  activation_bits: 16
+  weight_bits: 8          # Q1.7 format
+  activation_bits: 16     # Q8.8 format
 ```
 
 ## References

@@ -1,16 +1,16 @@
 # =============================================================================
 # CWGAN-GP for OFDM Signal Reconstruction
-# Models Package Initialization
+# Models Package Initialization (Mini Architecture for FPGA)
 # =============================================================================
 
-from .generator import UNetGenerator, ConvBlock, EncoderBlock, DecoderBlock
-from .discriminator import Discriminator, compute_gradient_penalty
+from .generator import MiniGenerator, UNetGenerator, ConvBlock
+from .discriminator import MiniDiscriminator, Discriminator, compute_gradient_penalty
 
 __all__ = [
-    'UNetGenerator',
-    'Discriminator',
+    'MiniGenerator',
+    'UNetGenerator',      # Alias for MiniGenerator
+    'MiniDiscriminator',
+    'Discriminator',      # Alias for MiniDiscriminator
     'ConvBlock',
-    'EncoderBlock', 
-    'DecoderBlock',
     'compute_gradient_penalty'
 ]

@@ -49,10 +49,10 @@ class OFDMDataset(Dataset):
     def __init__(
         self,
         image_dir: str,
-        frame_length: int = 1024,
-        modulation: str = 'QAM16',
-        n_subcarriers: int = 64,
-        cp_length: int = 16,
+        frame_length: int = 16,
+        modulation: str = 'QPSK',
+        n_subcarriers: int = 8,
+        cp_length: int = 2,
         snr_range: Tuple[float, float] = (0, 30),
         channel_type: str = 'awgn',
         samples_per_image: int = 10,
@@ -193,7 +193,7 @@ class SyntheticOFDMDataset(Dataset):
     def __init__(
         self,
         n_samples: int = 10000,
-        frame_length: int = 1024,
+        frame_length: int = 16,
         snr_range: Tuple[float, float] = (0, 30),
         channel_type: str = 'awgn'
     ):
@@ -289,7 +289,7 @@ def create_dataloader(
 
 def generate_test_samples(
     n_samples: int = 100,
-    frame_length: int = 1024,
+    frame_length: int = 16,
     snr_values: List[float] = [5, 10, 15, 20, 25],
     channel_type: str = 'awgn'
 ) -> Dict[float, List[Dict[str, torch.Tensor]]]:
@@ -357,7 +357,7 @@ if __name__ == "__main__":
     
     # Test synthetic dataset
     print("\n--- Synthetic Dataset Test ---")
-    dataset = SyntheticOFDMDataset(n_samples=100, frame_length=1024)
+    dataset = SyntheticOFDMDataset(n_samples=100, frame_length=16)
     
     sample = dataset[0]
     print(f"Sample keys: {sample.keys()}")
