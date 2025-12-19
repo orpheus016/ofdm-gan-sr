@@ -637,6 +637,11 @@ module generator_mini #(
                     
                     if (out_pos_cnt == FRAME_LEN-1) begin
                         out_pos_cnt <= 0;
+                        if (out_ch_cnt == OUT_CH-1) begin
+                            // Reset counters for ST_OUTPUT phase
+                            in_ch_cnt <= 0;
+                            in_pos_cnt <= 0;
+                        end
                         out_ch_cnt <= out_ch_cnt + 1;
                     end else begin
                         out_pos_cnt <= out_pos_cnt + 1;
