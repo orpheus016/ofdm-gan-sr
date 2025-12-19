@@ -63,23 +63,27 @@ module dense_layer #(
     // Accumulator (wider for MAC precision)
     localparam ACC_WIDTH = DATA_WIDTH + WEIGHT_WIDTH + $clog2(IN_SIZE);
     reg signed [ACC_WIDTH-1:0] accumulator;
+
+    // Pipeline Product Register (New)
+    // Size = Data(16) + Weight(8) = 24 bits
+    reg signed [DATA_WIDTH + WEIGHT_WIDTH - 1 : 0] product_reg;
     
     // State machine
-    localparam ST_IDLE     = 3'd0;
-    localparam ST_LOAD_IN  = 3'd1;
-    localparam ST_COMPUTE  = 3'd2;
-    localparam ST_ADD_BIAS = 3'd3;
-    localparam ST_OUTPUT   = 3'd4;
-    localparam ST_DONE     = 3'd5;
+    localparam [3:0]
+        ST_IDLE         = 4'd0,
+        ST_LOAD_IN      = 4'd1,
+        ST_PREP_COMPUTE = 4'd2,     // Prepare for a new neuron
+        ST_MAC_WAIT     = 4'd3,     // Wait for ROM
+        ST_MAC_MULT     = 4'd4,     // Stage 1: Multiply
+        ST_MAC_ACCUM    = 4'd5,     // Stage 2: Accumulate
+        ST_MAC_UPDATE   = 4'd6,     // Stage 3: Update Index
+        ST_ADD_BIAS     = 4'd7,
+        ST_OUTPUT       = 4'd8,
+        ST_DONE         = 4'd9;
     
-    reg [2:0] state;
+    reg [3:0] state;
     reg [$clog2(IN_SIZE):0] compute_idx;
     reg [$clog2(OUT_SIZE):0] output_idx;
-    
-    // Pipeline registers
-    reg signed [DATA_WIDTH-1:0] input_sample;
-    reg signed [WEIGHT_WIDTH-1:0] weight_sample;
-    reg pipeline_valid;
     
     //--------------------------------------------------------------------------
     // State Machine
@@ -94,12 +98,12 @@ module dense_layer #(
             compute_idx <= 0;
             output_idx <= 0;
             accumulator <= 0;
+            product_reg <= 0;
             data_out <= 0;
             data_out_valid <= 1'b0;
             weight_addr <= 0;
             bias_addr <= 0;
             out_idx <= 0;
-            pipeline_valid <= 1'b0;
         end else begin
             // Default outputs
             data_out_valid <= 1'b0;
@@ -120,45 +124,55 @@ module dense_layer #(
                         in_cnt <= in_cnt + 1;
                         
                         if (in_cnt == IN_SIZE - 1) begin
-                            state <= ST_COMPUTE;
+                            state <= ST_PREP_COMPUTE;
                             output_idx <= 0;
-                            compute_idx <= 0;
-                            accumulator <= 0;
-                            // Pre-fetch first weight
-                            weight_addr <= 0;
                         end
                     end
                 end
+
+                ST_PREP_COMPUTE: begin
+                    // Initialize for the current output neuron
+                    compute_idx <= 0;
+                    accumulator <= 0;
+                    weight_addr <= output_idx * IN_SIZE; // Request first weight
+                    state <= ST_MAC_WAIT;
+                end
                 
-                ST_COMPUTE: begin
-                    // MAC operation: accumulator += input[i] * weight[out][i]
-                    if (compute_idx < IN_SIZE) begin
-                        // Fetch input and weight
-                        input_sample <= input_buf[compute_idx];
-                        weight_sample <= weight_data;
-                        pipeline_valid <= 1'b1;
-                        
-                        // Update weight address for next cycle
-                        weight_addr <= output_idx * IN_SIZE + compute_idx + 1;
+                ST_MAC_WAIT: begin
+                    // Wait 1 cycle for ROM latency
+                    // Data requested in PREP or UPDATE will be ready next cycle
+                    state <= ST_MAC_MULT;
+                end
+
+                ST_MAC_MULT: begin
+                    // Stage 1: Multiplication
+                    // product = input[i] * weight[i]
+                    product_reg <= $signed(input_buf[compute_idx]) * $signed(weight_data);
+                    state <= ST_MAC_ACCUM;
+                end
+
+                ST_MAC_ACCUM: begin
+                    // Stage 2: Accumulation
+                    // acc += product
+                    accumulator <= accumulator + product_reg;
+                    state <= ST_MAC_UPDATE;
+                end
+
+                ST_MAC_UPDATE: begin
+                    // Stage 3: Update Index and Address
+                    if (compute_idx < IN_SIZE - 1) begin
                         compute_idx <= compute_idx + 1;
+                        weight_addr <= weight_addr + 1; // Prepare next weight address
+                        state <= ST_MAC_WAIT;           // Loop back
                     end else begin
-                        pipeline_valid <= 1'b0;
-                    end
-                    
-                    // Accumulate (1 cycle delay for pipeline)
-                    if (pipeline_valid) begin
-                        accumulator <= accumulator + 
-                            (input_sample * weight_sample);
-                    end
-                    
-                    // Check if done with this output
-                    if (compute_idx == IN_SIZE && !pipeline_valid) begin
+                        // Done with all inputs for this neuron
+                        bias_addr <= output_idx;        // Request bias
                         state <= ST_ADD_BIAS;
-                        bias_addr <= output_idx;
                     end
                 end
                 
                 ST_ADD_BIAS: begin
+                    // Wait one cycle implies bias is ready now (since addr set in UPDATE)
                     // Add bias and shift for fixed-point alignment
                     // Result: Q8.8 + (Q8.8 * Q1.7) >> 7 = Q8.8
                     accumulator <= (accumulator >>> WEIGHT_FRAC) + 
@@ -177,7 +191,7 @@ module dense_layer #(
                     end
                     
                     data_out_valid <= 1'b1;
-                    out_idx <= output_idx;
+                    out_idx <= output_idx; // Output index signal
                     
                     output_idx <= output_idx + 1;
                     
@@ -185,10 +199,7 @@ module dense_layer #(
                         state <= ST_DONE;
                     end else begin
                         // Next output neuron
-                        state <= ST_COMPUTE;
-                        compute_idx <= 0;
-                        accumulator <= 0;
-                        weight_addr <= (output_idx + 1) * IN_SIZE;
+                        state <= ST_PREP_COMPUTE;
                     end
                 end
                 

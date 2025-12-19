@@ -44,7 +44,7 @@ module simple_discriminator #(
     // Weight ROM interface - Layer 2 (3 -> 1)
     output reg  [1:0]                   w2_addr,  // 3 weights
     input  wire signed [WEIGHT_WIDTH-1:0] w2_data,
-    input  wire signed [DATA_WIDTH-1:0] b2_data  // Single bias, no address needed
+    input  wire signed [DATA_WIDTH-1:0] b2_data   // Single bias
 );
 
     //--------------------------------------------------------------------------
@@ -53,24 +53,33 @@ module simple_discriminator #(
     localparam FRAC_BITS = 7;  // Weight fraction bits (Q1.7)
 
     //--------------------------------------------------------------------------
-    // State Machine - with WAIT states for ROM latency
+    // State Machine - Pipelined MAC (3 Stages)
     //--------------------------------------------------------------------------
     localparam [4:0]
-        ST_IDLE        = 5'd0,
-        ST_LOAD_INPUT  = 5'd1,
-        ST_L1_WAIT     = 5'd2,
-        ST_L1_MAC      = 5'd3,
-        ST_L1_BIAS_WAIT = 5'd4,
-        ST_L1_BIAS     = 5'd5,
-        ST_L1_ACT      = 5'd6,
-        ST_L1_ACT_WAIT = 5'd7,
-        ST_L2_WAIT     = 5'd8,
-        ST_L2_MAC      = 5'd9,
-        ST_L2_BIAS_WAIT = 5'd10,
-        ST_L2_BIAS     = 5'd11,
-        ST_L2_ACT      = 5'd12,
-        ST_L2_ACT_WAIT = 5'd13,
-        ST_DONE        = 5'd14;
+        ST_IDLE         = 5'd0,
+        ST_LOAD_INPUT   = 5'd1,
+        
+        // --- LAYER 1 (9 -> 3) ---
+        ST_L1_WAIT      = 5'd2,     // Wait for ROM
+        ST_L1_MULT      = 5'd3,     // Stage 1: Multiply
+        ST_L1_ACCUM     = 5'd4,     // Stage 2: Accumulate
+        ST_L1_UPDATE    = 5'd5,     // Stage 3: Update Index
+        ST_L1_BIAS_WAIT = 5'd6,
+        ST_L1_BIAS      = 5'd7,
+        ST_L1_ACT       = 5'd8,
+        ST_L1_ACT_WAIT  = 5'd9,
+        
+        // --- LAYER 2 (3 -> 1) ---
+        ST_L2_WAIT      = 5'd10,    // Wait for ROM
+        ST_L2_MULT      = 5'd11,    // Stage 1: Multiply
+        ST_L2_ACCUM     = 5'd12,    // Stage 2: Accumulate
+        ST_L2_UPDATE    = 5'd13,    // Stage 3: Update Index
+        ST_L2_BIAS_WAIT = 5'd14,
+        ST_L2_BIAS      = 5'd15,
+        ST_L2_ACT       = 5'd16,
+        ST_L2_ACT_WAIT  = 5'd17,
+        
+        ST_DONE         = 5'd18;
 
     reg [4:0] state, next_state;
     
@@ -82,6 +91,10 @@ module simple_discriminator #(
     reg signed [DATA_WIDTH-1:0] output_reg;
     
     reg signed [31:0] accumulator;
+    // New Register for Pipelined MAC
+    // Size = Data(16) + Weight(8) = 24 bits
+    reg signed [23:0] product_reg;
+    
     reg [3:0] out_idx;   // Current output neuron index
     reg [3:0] in_idx;    // Current input element index
     
@@ -91,7 +104,7 @@ module simple_discriminator #(
     reg signed [DATA_WIDTH-1:0] tanh_in;
     reg                         tanh_valid_in;
     wire signed [DATA_WIDTH-1:0] tanh_out;
-    wire                         tanh_valid_out;
+    wire                        tanh_valid_out;
     
     activation_tanh #(
         .DATA_WIDTH(DATA_WIDTH),
@@ -111,7 +124,7 @@ module simple_discriminator #(
     reg signed [DATA_WIDTH-1:0] sigmoid_in;
     reg                         sigmoid_valid_in;
     wire signed [DATA_WIDTH-1:0] sigmoid_out;
-    wire                         sigmoid_valid_out;
+    wire                        sigmoid_valid_out;
     
     activation_sigmoid #(
         .DATA_WIDTH(DATA_WIDTH),
@@ -147,6 +160,7 @@ module simple_discriminator #(
             out_idx <= 0;
             in_idx <= 0;
             accumulator <= 0;
+            product_reg <= 0; // Reset product reg
             tanh_in <= 0;
             tanh_valid_in <= 0;
             sigmoid_in <= 0;
@@ -170,113 +184,120 @@ module simple_discriminator #(
                 ST_IDLE: begin
                     done <= 0;
                     if (valid_in) begin
-                        // Latch input
                         for (integer i = 0; i < INPUT_SIZE; i = i + 1)
                             input_reg[i] <= data_in[i];
                     end
                 end
                 
                 ST_LOAD_INPUT: begin
-                    // Initialize for Layer 1
                     out_idx <= 0;
                     in_idx <= 0;
                     accumulator <= 0;
-                    w1_addr <= 0;  // Request w[0,0]
+                    w1_addr <= 0;
                 end
                 
                 ST_L1_WAIT: begin
-                    // Wait one cycle for ROM data
+                    // Wait for ROM data
                 end
                 
-                ST_L1_MAC: begin
-                    // MAC: accumulator += input[in_idx] * weight
-                    accumulator <= accumulator + 
-                                   ($signed(input_reg[in_idx]) * $signed(w1_data));
-                    
+                // --- LAYER 1 MAC STAGES ---
+                ST_L1_MULT: begin
+                    // Stage 1: Multiplication
+                    product_reg <= $signed(input_reg[in_idx]) * $signed(w1_data);
+                end
+                
+                ST_L1_ACCUM: begin
+                    // Stage 2: Accumulation
+                    accumulator <= accumulator + product_reg;
+                end
+                
+                ST_L1_UPDATE: begin
+                    // Stage 3: Update Control
                     if (in_idx < INPUT_SIZE - 1) begin
                         in_idx <= in_idx + 1;
-                        w1_addr <= w1_addr + 1;  // Request next weight
+                        w1_addr <= w1_addr + 1;
                     end else begin
-                        // Done with this neuron's inputs
-                        b1_addr <= out_idx[1:0];  // Request bias
+                        b1_addr <= out_idx[1:0];
                     end
                 end
+                // --------------------------
                 
                 ST_L1_BIAS_WAIT: begin
-                    // Wait one cycle for bias ROM data
+                    // Wait for bias ROM
                 end
                 
                 ST_L1_BIAS: begin
-                    // Add bias: result = (accumulator >> FRAC_BITS) + bias
                     hidden[out_idx] <= (accumulator >>> FRAC_BITS) + b1_data;
                     
                     if (out_idx < HIDDEN_SIZE - 1) begin
                         out_idx <= out_idx + 1;
                         in_idx <= 0;
                         accumulator <= 0;
-                        w1_addr <= (out_idx + 1) * INPUT_SIZE;  // Request first weight for next neuron
+                        w1_addr <= (out_idx + 1) * INPUT_SIZE;
                     end else begin
-                        // All hidden neurons computed, apply activation
                         out_idx <= 0;
                     end
                 end
                 
                 ST_L1_ACT: begin
-                    // Apply tanh to current hidden neuron
                     tanh_in <= hidden[out_idx];
                     tanh_valid_in <= 1;
                 end
                 
                 ST_L1_ACT_WAIT: begin
-                    // Wait for tanh result
                     if (tanh_valid_out) begin
                         hidden[out_idx] <= tanh_out;
                         
                         if (out_idx < HIDDEN_SIZE - 1) begin
                             out_idx <= out_idx + 1;
                         end else begin
-                            // All activations done, prepare for layer 2
                             out_idx <= 0;
                             in_idx <= 0;
                             accumulator <= 0;
-                            w2_addr <= 0;  // Request w[0]
+                            w2_addr <= 0;
                         end
                     end
                 end
                 
                 ST_L2_WAIT: begin
-                    // Wait one cycle for ROM data
+                    // Wait for ROM
                 end
                 
-                ST_L2_MAC: begin
-                    // MAC: accumulator += hidden[in_idx] * weight
-                    accumulator <= accumulator + 
-                                   ($signed(hidden[in_idx]) * $signed(w2_data));
-                    
+                // --- LAYER 2 MAC STAGES ---
+                ST_L2_MULT: begin
+                    // Stage 1: Multiplication
+                    product_reg <= $signed(hidden[in_idx]) * $signed(w2_data);
+                end
+                
+                ST_L2_ACCUM: begin
+                    // Stage 2: Accumulation
+                    accumulator <= accumulator + product_reg;
+                end
+                
+                ST_L2_UPDATE: begin
+                    // Stage 3: Update Control
                     if (in_idx < HIDDEN_SIZE - 1) begin
                         in_idx <= in_idx + 1;
-                        w2_addr <= w2_addr + 1;  // Request next weight
+                        w2_addr <= w2_addr + 1;
                     end
-                    // else: Done with inputs, will move to bias
+                    // Else: done with inputs, move to bias
                 end
+                // --------------------------
                 
                 ST_L2_BIAS_WAIT: begin
-                    // Wait one cycle for bias ROM data
+                    // Wait if needed (kept for consistency)
                 end
                 
                 ST_L2_BIAS: begin
-                    // Add bias
                     output_reg <= (accumulator >>> FRAC_BITS) + b2_data;
                 end
                 
                 ST_L2_ACT: begin
-                    // Apply sigmoid to output
                     sigmoid_in <= output_reg;
                     sigmoid_valid_in <= 1;
                 end
                 
                 ST_L2_ACT_WAIT: begin
-                    // Wait for sigmoid result
                     if (sigmoid_valid_out) begin
                         output_reg <= sigmoid_out;
                         disc_out <= sigmoid_out;
@@ -301,40 +322,32 @@ module simple_discriminator #(
         
         case (state)
             ST_IDLE: begin
-                if (valid_in)
-                    next_state = ST_LOAD_INPUT;
+                if (valid_in) next_state = ST_LOAD_INPUT;
             end
             
-            ST_LOAD_INPUT: begin
-                next_state = ST_L1_WAIT;
-            end
+            ST_LOAD_INPUT: next_state = ST_L1_WAIT;
             
-            ST_L1_WAIT: begin
-                next_state = ST_L1_MAC;
-            end
-            
-            ST_L1_MAC: begin
-                if (in_idx == INPUT_SIZE - 1)
-                    next_state = ST_L1_BIAS_WAIT;
+            // --- LAYER 1 FLOW ---
+            ST_L1_WAIT:   next_state = ST_L1_MULT;
+            ST_L1_MULT:   next_state = ST_L1_ACCUM;
+            ST_L1_ACCUM:  next_state = ST_L1_UPDATE;
+            ST_L1_UPDATE: begin
+                if (in_idx < INPUT_SIZE - 1)
+                    next_state = ST_L1_WAIT; // Loop back
                 else
-                    next_state = ST_L1_WAIT;  // Wait for next weight
+                    next_state = ST_L1_BIAS_WAIT; // Done inputs
             end
             
-            ST_L1_BIAS_WAIT: begin
-                next_state = ST_L1_BIAS;
-            end
+            ST_L1_BIAS_WAIT: next_state = ST_L1_BIAS;
             
             ST_L1_BIAS: begin
                 if (out_idx == HIDDEN_SIZE - 1)
                     next_state = ST_L1_ACT;
                 else
-                    next_state = ST_L1_WAIT;  // Back to MAC for next neuron
+                    next_state = ST_L1_WAIT;
             end
             
-            ST_L1_ACT: begin
-                next_state = ST_L1_ACT_WAIT;
-            end
-            
+            ST_L1_ACT:      next_state = ST_L1_ACT_WAIT;
             ST_L1_ACT_WAIT: begin
                 if (tanh_valid_out) begin
                     if (out_idx == HIDDEN_SIZE - 1)
@@ -344,37 +357,29 @@ module simple_discriminator #(
                 end
             end
             
-            ST_L2_WAIT: begin
-                next_state = ST_L2_MAC;
-            end
-            
-            ST_L2_MAC: begin
-                if (in_idx == HIDDEN_SIZE - 1)
-                    next_state = ST_L2_BIAS_WAIT;
+            // --- LAYER 2 FLOW ---
+            ST_L2_WAIT:   next_state = ST_L2_MULT;
+            ST_L2_MULT:   next_state = ST_L2_ACCUM;
+            ST_L2_ACCUM:  next_state = ST_L2_UPDATE;
+            ST_L2_UPDATE: begin
+                if (in_idx < HIDDEN_SIZE - 1)
+                    next_state = ST_L2_WAIT; // Loop back
                 else
-                    next_state = ST_L2_WAIT;  // Wait for next weight
+                    next_state = ST_L2_BIAS_WAIT; // Done inputs
             end
             
-            ST_L2_BIAS_WAIT: begin
-                next_state = ST_L2_BIAS;
-            end
+            ST_L2_BIAS_WAIT: next_state = ST_L2_BIAS;
             
-            ST_L2_BIAS: begin
-                next_state = ST_L2_ACT;
-            end
+            ST_L2_BIAS:      next_state = ST_L2_ACT;
             
-            ST_L2_ACT: begin
-                next_state = ST_L2_ACT_WAIT;
-            end
+            ST_L2_ACT:       next_state = ST_L2_ACT_WAIT;
             
             ST_L2_ACT_WAIT: begin
                 if (sigmoid_valid_out)
                     next_state = ST_DONE;
             end
             
-            ST_DONE: begin
-                next_state = ST_IDLE;
-            end
+            ST_DONE: next_state = ST_IDLE;
             
             default: next_state = ST_IDLE;
         endcase
