@@ -1,0 +1,62 @@
+{
+  "verification_date": "2025-12-19T08:39:44",
+  "rtl_modules_tested": [
+    "generator",
+    "discriminator",
+    "cwgan_gp"
+  ],
+  "total_tests": 7,
+  "passed_tests": 7,
+  "signal_metrics": [
+    {
+      "test": "AWGN",
+      "degraded_mse": 179.0,
+      "reconstructed_mse": 15776.53,
+      "degraded_snr": 17.46,
+      "reconstructed_snr": -1.99,
+      "degraded_evm": 13.39,
+      "reconstructed_evm": 125.71,
+      "rtl_valid": true
+    },
+    {
+      "test": "Deep Fade",
+      "degraded_mse": 2051.5,
+      "reconstructed_mse": 12050.66,
+      "degraded_snr": 5.28,
+      "reconstructed_snr": -2.41,
+      "degraded_evm": 54.48,
+      "reconstructed_evm": 132.04,
+      "rtl_valid": true
+    },
+    {
+      "test": "Burst",
+      "degraded_mse": 1302.06,
+      "reconstructed_mse": 15741.84,
+      "degraded_snr": 6.16,
+      "reconstructed_snr": -4.67,
+      "degraded_evm": 49.21,
+      "reconstructed_evm": 171.12,
+      "rtl_valid": true
+    },
+    {
+      "test": "Freq-Selective",
+      "degraded_mse": 1767.12,
+      "reconstructed_mse": 19495.16,
+      "degraded_snr": 6.08,
+      "reconstructed_snr": -4.35,
+      "degraded_evm": 49.65,
+      "reconstructed_evm": 164.92,
+      "rtl_valid": true
+    },
+    {
+      "test": "Worst Case",
+      "degraded_mse": 3351.94,
+      "reconstructed_mse": 13187.84,
+      "degraded_snr": 2.81,
+      "reconstructed_snr": -3.14,
+      "degraded_evm": 72.37,
+      "reconstructed_evm": 143.55,
+      "rtl_valid": true
+    }
+  ]
+}
