@@ -14,7 +14,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 $VerilogFiles = @(
-    "..\activation_tanh.v",
+    "activation_tanh.v",
     "activation_sigmoid.v",
     "simple_gan_weights.v",
     "simple_generator.v",
