@@ -340,7 +340,7 @@ module tb_simple_gan;
         start = 0;
         wait(done);
         @(posedge clk);
-        $display("  Latent [1.0, 1.0] -> center: %6.3f", q88_to_real(gen_image[4]));
+        $display("  Latent [-1.0, 1.0] -> center: %6.3f", q88_to_real(gen_image[4]));
         
         #(CLK_PERIOD * 5);
         
@@ -353,7 +353,7 @@ module tb_simple_gan;
         start = 0;
         wait(done);
         @(posedge clk);
-        $display("  Latent [-1.0, -1.0] -> center: %6.3f", q88_to_real(gen_image[4]));
+        $display("  Latent [1.0, -1.0] -> center: %6.3f", q88_to_real(gen_image[4]));
         
         // Test latent vector 3
         latent_in[0] = 16'h0000;  // 0.0
