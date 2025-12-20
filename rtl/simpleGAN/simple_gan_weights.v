@@ -63,7 +63,7 @@ module simple_gan_weights (
     // Values from MATLAB, quantized to Q1.7 (multiply by 128)
     reg signed [7:0] gen_w1_rom [0:5];
     initial begin
-        // W^G2 from MATLAB epooch 30.000:
+        // W^G2 from MATLAB epoch 30.000:
         gen_w1_rom[0] = 8'sd4;    
         gen_w1_rom[1] = 8'sd8;   
         gen_w1_rom[2] = 8'sd22;   
