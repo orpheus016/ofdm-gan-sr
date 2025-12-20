@@ -19,7 +19,7 @@ VVP = vvp
 GTKWAVE = gtkwave
 
 # Source files
-TANH_SRC = ../activation_tanh.v
+TANH_SRC = activation_tanh.v
 SRC_FILES = \
 	activation_sigmoid.v \
 	simple_gan_weights.v \
