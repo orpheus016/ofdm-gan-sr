@@ -6,9 +6,6 @@
 OFDM SIGNAL VISUALIZATION
 ==========================
 
-Generates research-quality visualizations similar to:
-"TOR-GAN: A Transformer-Based OFDM Signals Reconstruction GAN" (MDPI Electronics 2024)
-
 Visualization types:
 1. Time-domain waveform (I/Q components)
 2. Constellation diagram (IQ scatter)
