@@ -50,8 +50,8 @@ module tb_simple_gan;
     real    score_real;
     
     // Circle pattern (from MATLAB): 3x3 with values at corners
-    // [1 -1 1; -1 1 -1; 1 -1 1]
-    // Flattened: [1, -1, 1, -1, 1, -1, 1, -1, 1]
+    // [1 1 1; 1 -1 1; 1 1 1]
+    // Flattened: [1, 1, 1, 1, -1, 1, 1, 1, 1]
     reg signed [DATA_WIDTH-1:0] circle_pattern [0:IMAGE_SIZE-1];
     
     // Cross pattern (from MATLAB): 3x3 with values in cross shape
@@ -137,15 +137,15 @@ module tb_simple_gan;
             image_in[i] = 16'h0000;
         
         // Initialize test patterns (Q8.8: 256 = 1.0, -256 = -1.0)
-        // Circle pattern: [1 -1 1; -1 1 -1; 1 -1 1]
+        // Circle pattern: [1 1 1; 1 -1 1; 1 1 1]
         circle_pattern[0] = 16'h0100;   // +1.0
-        circle_pattern[1] = 16'hFF00;   // -1.0
+        circle_pattern[1] = 16'h0100;   // +1.0
         circle_pattern[2] = 16'h0100;   // +1.0
-        circle_pattern[3] = 16'hFF00;   // -1.0
-        circle_pattern[4] = 16'h0100;   // +1.0
-        circle_pattern[5] = 16'hFF00;   // -1.0
+        circle_pattern[3] = 16'h0100;   // +1.0
+        circle_pattern[4] = 16'hFF00;   // -1.0
+        circle_pattern[5] = 16'h0100;   // +1.0
         circle_pattern[6] = 16'h0100;   // +1.0
-        circle_pattern[7] = 16'hFF00;   // -1.0
+        circle_pattern[7] = 16'h0100;   // +1.0
         circle_pattern[8] = 16'h0100;   // +1.0
         
         // Cross pattern: [-1 1 -1; 1 1 1; -1 1 -1]
@@ -173,10 +173,10 @@ module tb_simple_gan;
         
         mode = 2'b00;
         // MATLAB: ng = [1.5442; 0.0859]
-        // Q8.8: 1.5442 * 256 = 395.3 = 0x018B
-        //       0.0859 * 256 = 22.0  = 0x0016
-        latent_in[0] = 16'h018B;  // 1.5442 in Q8.8
-        latent_in[1] = 16'h0016;  // 0.0859 in Q8.8
+        // Q8.8: 1.1112 * 256 = 284.46 = 0x018B
+        //       1.9162 * 256 = 490.54 = 0x0016
+        latent_in[0] = 16'h011C;  // 1.1112 in Q8.8
+        latent_in[1] = 16'h01EB;  // 1.9162 in Q8.8
         
         @(posedge clk);
         start = 1;
@@ -196,11 +196,11 @@ module tb_simple_gan;
             q88_to_real(gen_image[6]), q88_to_real(gen_image[7]), q88_to_real(gen_image[8]));
         
         // Expected from MATLAB:
-        // x_fake = [-0.0265, -0.0361, 0.0486, 0.0745, 0.0171, 0.0731, -0.0577, 0.0589, 0.0885]
+        // x_fake = [-0.1753, 0.5685, 0.2215, 0.7049, -0.0964, 0.7242, -0.0774, 0.7154, 0.1548]
         $display("  Expected (MATLAB):");
-        $display("    [-0.0265 -0.0361  0.0486]");
-        $display("    [ 0.0745  0.0171  0.0731]");
-        $display("    [-0.0577  0.0589  0.0885]");
+        $display("    [-0.1753  0.5685  0.2215]");
+        $display("    [ 0.7049 -0.0964  0.7242]");
+        $display("    [-0.0774  0.7154  0.1548]");
         
         // Check if outputs are non-zero (basic sanity check)
         if (gen_image[0] != 0 || gen_image[2] != 0 || gen_image[8] != 0) begin
@@ -236,7 +236,7 @@ module tb_simple_gan;
         score_real = q88_to_real(disc_score);
         $display("  Input: Cross pattern (x_real)");
         $display("  Discriminator score: %6.4f (Q8.8: 0x%04h)", score_real, disc_score);
-        $display("  Expected (MATLAB): ad3_real = 0.4883");
+        $display("  Expected (MATLAB): ad3_real = 0.6770");
         
         // Score should be between 0 and 1 (sigmoid output)
         if (disc_score >= 0 && disc_score <= 16'h0100) begin
@@ -287,11 +287,11 @@ module tb_simple_gan;
         //======================================================================
         test_num = 4;
         $display("\n[Test %0d] Full GAN Mode (Generate + Discriminate)", test_num);
-        $display("  Latent input (ng): [1.5442, 0.0859]");
+        $display("  Latent input (ng): [1.1112, 1.9162]");
         
         mode = 2'b10;
-        latent_in[0] = 16'h018B;  // 1.5442 in Q8.8
-        latent_in[1] = 16'h0016;  // 0.0859 in Q8.8
+        latent_in[0] = 16'h011C;  // 1.1112 in Q8.8
+        latent_in[1] = 16'h01EB;  // 1.9162 in Q8.8
         
         @(posedge clk);
         start = 1;
