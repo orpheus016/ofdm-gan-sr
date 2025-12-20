@@ -169,10 +169,10 @@ module tb_simple_gan;
         //======================================================================
         test_num = 1;
         $display("\n[Test %0d] Generator with MATLAB Test Vector", test_num);
-        $display("  Latent input (ng): [1.5442, 0.0859]");
+        $display("  Latent input (ng): [1.1112, 1.9162]");
         
         mode = 2'b00;
-        // MATLAB: ng = [1.5442; 0.0859]
+        // MATLAB: ng = [1.1112, 1.9162]
         // Q8.8: 1.1112 * 256 = 284.46 = 0x018B
         //       1.9162 * 256 = 490.54 = 0x0016
         latent_in[0] = 16'h011C;  // 1.1112 in Q8.8
@@ -332,7 +332,7 @@ module tb_simple_gan;
         mode = 2'b00;  // Generator only
         
         // Test latent vector 1
-        latent_in[0] = 16'h0100;  // 1.0
+        latent_in[0] = 16'hFF00;  // -1.0
         latent_in[1] = 16'h0100;  // 1.0
         @(posedge clk);
         start = 1;
@@ -345,7 +345,7 @@ module tb_simple_gan;
         #(CLK_PERIOD * 5);
         
         // Test latent vector 2
-        latent_in[0] = 16'hFF00;  // -1.0
+        latent_in[0] = 16'h0100;  // 1.0
         latent_in[1] = 16'hFF00;  // -1.0
         @(posedge clk);
         start = 1;
@@ -368,6 +368,204 @@ module tb_simple_gan;
         
         $display("  [PASS] Multiple latent vectors tested");
         pass_count = pass_count + 1;
+
+        //======================================================================
+        // Test 6: Full GAN Mode 1 (Compare with MATLAB)
+        //======================================================================
+        test_num = 6;
+        $display("\n[Test %0d] Full GAN Mode 1 (Compare RTL vs MATLAB)", test_num);
+        
+        mode = 2'b10; // Full GAN
+        
+        // Latent = [-0.1, 0.1] (Small latent values)
+        $display("  Latent input (ng): [-0.1, 0.1]");
+        latent_in[0] = 16'hFFE6; // -0.1
+        latent_in[1] = 16'h001A; // 0.1
+        
+        @(posedge clk);
+        start = 1;
+        @(posedge clk);
+        start = 0;
+        
+        wait(done);
+        @(posedge clk);
+        
+        // Display RTL Result
+        $display("  [RTL Result] Generated 3x3 image:");
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[0]), q88_to_real(gen_image[1]), q88_to_real(gen_image[2]));
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[3]), q88_to_real(gen_image[4]), q88_to_real(gen_image[5]));
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[6]), q88_to_real(gen_image[7]), q88_to_real(gen_image[8]));
+
+        // Display Expected MATLAB Result
+        $display("  [MATLAB Expected] (Fill in these values):");
+        $display("    [-0.1440  0.5673  0.1820]");
+        $display("    [ 0.6428 -0.0980  0.6613]");
+        $display("    [-0.0210  0.6584  0.0649]");
+        
+        // Display Score
+        score_real = q88_to_real(disc_score);
+        $display("  Discriminator score on fake: %6.4f", score_real);
+        
+        // Check Score
+        if (disc_score >= 0 && disc_score <= 16'h0100) begin
+            $display("  [PASS] Full GAN pipeline completed");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] Score out of range");
+            fail_count = fail_count + 1;
+        end
+        
+        #(CLK_PERIOD * 5);
+
+        //======================================================================
+        // Test 7: Full GAN Mode 2 (Compare with MATLAB)
+        //======================================================================
+        test_num = 7;
+        $display("\n[Test %0d] Full GAN Mode 2 (Compare RTL vs MATLAB)", test_num);
+        
+        mode = 2'b10; // Full GAN
+        
+        // Latent = [0.5, -0.5] (Moderate latent values)
+        $display("  Latent input (ng): [0.5, -0.5]");
+        latent_in[0] = 16'h0080; // 0.5
+        latent_in[1] = 16'hFF80; // -0.5
+        
+        @(posedge clk);
+        start = 1;
+        @(posedge clk);
+        start = 0;
+        
+        wait(done);
+        @(posedge clk);
+        
+        // Display RTL Result
+        $display("  [RTL Result] Generated 3x3 image:");
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[0]), q88_to_real(gen_image[1]), q88_to_real(gen_image[2]));
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[3]), q88_to_real(gen_image[4]), q88_to_real(gen_image[5]));
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[6]), q88_to_real(gen_image[7]), q88_to_real(gen_image[8]));
+
+        // Display Expected MATLAB Result
+        $display("  [MATLAB Expected] (Fill in these values):");
+        $display("    [-0.1475  0.5654  0.1831]");
+        $display("    [ 0.6492 -0.0860  0.6653]");
+        $display("    [-0.0367  0.6673  0.0823]");
+
+        // Display Score
+        score_real = q88_to_real(disc_score);
+        $display("  Discriminator score on fake: %6.4f", score_real);
+
+        // Check Score
+        if (disc_score >= 0 && disc_score <= 16'h0100) begin
+            $display("  [PASS] Full GAN pipeline completed");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] Score out of range");
+            fail_count = fail_count + 1;
+        end
+
+        //======================================================================
+        // Test 8: Full GAN Mode 3 (Compare with MATLAB)
+        //======================================================================
+        test_num = 8;
+        $display("\n[Test %0d] Full GAN Mode 3 (Compare RTL vs MATLAB)", test_num);
+        
+        mode = 2'b10; // Full GAN
+        
+        // Latent = [-1, 1]
+        $display("  Latent input (ng): [-1, 1]");
+        latent_in[0] = 16'hFF00; // -1
+        latent_in[1] = 16'h0100; // 1
+        
+        @(posedge clk);
+        start = 1;
+        @(posedge clk);
+        start = 0;
+        
+        wait(done);
+        @(posedge clk);
+        
+        // Display RTL Result
+        $display("  [RTL Result] Generated 3x3 image:");
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[0]), q88_to_real(gen_image[1]), q88_to_real(gen_image[2]));
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[3]), q88_to_real(gen_image[4]), q88_to_real(gen_image[5]));
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[6]), q88_to_real(gen_image[7]), q88_to_real(gen_image[8]));
+
+        // Display Expected MATLAB Result (PLACEHOLDER)
+        $display("  [MATLAB Expected] (Fill in these values):");
+        $display("    [-0.1385  0.5701  0.1796]");
+        $display("    [ 0.6324 -0.1163  0.6547]");
+        $display("    [ 0.0031  0.6444  0.0381]");
+
+        // Display Score
+        score_real = q88_to_real(disc_score);
+        $display("  Discriminator score on fake: %6.4f", score_real);
+
+        // Check Score
+        if (disc_score >= 0 && disc_score <= 16'h0100) begin
+            $display("  [PASS] Full GAN pipeline completed");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] Score out of range");
+            fail_count = fail_count + 1;
+        end
+
+        //======================================================================
+        // Test 9: Full GAN Mode 4 (Compare with MATLAB)
+        //======================================================================
+        test_num = 9;
+        $display("\n[Test %0d] Full GAN Mode 4 (Compare RTL vs MATLAB)", test_num);
+        
+        mode = 2'b10; // Full GAN
+        
+        // Latent = [-3, 3]
+        $display("  Latent input (ng): [-3, 3]");
+        latent_in[0] = 16'hFD00; // -3
+        latent_in[1] = 16'h0300; // 3
+        
+        @(posedge clk);
+        start = 1;
+        @(posedge clk);
+        start = 0;
+        
+        wait(done);
+        @(posedge clk);
+        
+        // Display RTL Result
+        $display("  [RTL Result] Generated 3x3 image:");
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[0]), q88_to_real(gen_image[1]), q88_to_real(gen_image[2]));
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[3]), q88_to_real(gen_image[4]), q88_to_real(gen_image[5]));
+        $display("    [%7.4f %7.4f %7.4f]", 
+            q88_to_real(gen_image[6]), q88_to_real(gen_image[7]), q88_to_real(gen_image[8]));
+
+        // Display Expected MATLAB Result (PLACEHOLDER)
+        $display("  [MATLAB Expected] (Fill in these values):");
+        $display("    [-0.1263  0.5758  0.1731]");
+        $display("    [ 0.6075 -0.1566  0.6390]");
+        $display("    [ 0.0563  0.6114 -0.0221]");
+
+        // Display Score
+        score_real = q88_to_real(disc_score);
+        $display("  Discriminator score on fake: %6.4f", score_real);
+
+        // Check Score
+        if (disc_score >= 0 && disc_score <= 16'h0100) begin
+            $display("  [PASS] Full GAN pipeline completed");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] Score out of range");
+            fail_count = fail_count + 1;
+        end
         
         //======================================================================
         // Summary
