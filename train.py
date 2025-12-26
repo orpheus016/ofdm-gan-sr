@@ -561,6 +561,10 @@ def main():
                         help='Checkpoint path to load for export-only mode')
     parser.add_argument('--export_dir', type=str, default=None,
                         help='Directory to write exported weights (overrides config)')
+    parser.add_argument('--nonlinear', action='store_true',
+                        help='Enable non-linear impairments (PA, IQ imbalance, phase noise)')
+    parser.add_argument('--pa_saturation', type=float, default=0.8,
+                        help='PA saturation level (lower = more compression)')
     
     args = parser.parse_args()
     
@@ -615,15 +619,25 @@ def main():
     # Create dataset
     if args.synthetic:
         print("Using synthetic OFDM dataset")
+        nonlinear_enabled = getattr(args, 'nonlinear', False)
+        pa_sat = getattr(args, 'pa_saturation', 0.8)
+        
+        if nonlinear_enabled:
+            print(f"  Non-linear impairments ENABLED (PA sat={pa_sat})")
+        
         train_dataset = SyntheticOFDMDataset(
             n_samples=10000,
             frame_length=frame_length,
-            snr_range=tuple(config.get('channel', {}).get('snr_range', [5, 20]))
+            snr_range=tuple(config.get('channel', {}).get('snr_range', [5, 20])),
+            nonlinear=nonlinear_enabled,
+            pa_saturation=pa_sat
         )
         val_dataset = SyntheticOFDMDataset(
             n_samples=1000,
             frame_length=frame_length,
-            snr_range=tuple(config.get('channel', {}).get('snr_range', [5, 20]))
+            snr_range=tuple(config.get('channel', {}).get('snr_range', [5, 20])),
+            nonlinear=nonlinear_enabled,
+            pa_saturation=pa_sat
         )
     else:
         # Try to load from data directory

@@ -7,7 +7,8 @@ from .ofdm_utils import (
     QAMModulator,
     OFDMModulator, 
     ChannelModel,
-    ImageOFDMConverter
+    ImageOFDMConverter,
+    NonLinearImpairments
 )
 
 from .dataset import (
@@ -28,12 +29,22 @@ from .quantization import (
     compute_layer_crc
 )
 
+from .classical_equalizers import (
+    ZeroForcingEqualizer,
+    MMSEEqualizer,
+    DecisionFeedbackEqualizer,
+    LMSEqualizer,
+    RLSEqualizer,
+    compare_equalizers
+)
+
 __all__ = [
     # OFDM utilities
     'QAMModulator',
     'OFDMModulator',
     'ChannelModel',
     'ImageOFDMConverter',
+    'NonLinearImpairments',
     
     # Dataset utilities
     'OFDMDataset',
@@ -49,5 +60,13 @@ __all__ = [
     'FakeQuantize',
     'QuantizedConv1d',
     'export_weights_fpga',
-    'compute_layer_crc'
+    'compute_layer_crc',
+    
+    # Classical Equalizers
+    'ZeroForcingEqualizer',
+    'MMSEEqualizer',
+    'DecisionFeedbackEqualizer',
+    'LMSEqualizer',
+    'RLSEqualizer',
+    'compare_equalizers'
 ]

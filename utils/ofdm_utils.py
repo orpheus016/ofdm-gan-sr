@@ -372,6 +372,240 @@ class OFDMModulator:
 
 
 # =============================================================================
+# Non-Linear Impairments
+# =============================================================================
+
+class NonLinearImpairments:
+    """
+    RF Front-End Non-Linear Impairments for realistic OFDM simulation.
+    
+    Implements:
+    - Power Amplifier (PA) non-linearity (Rapp model, Saleh model)
+    - IQ Imbalance (amplitude and phase mismatch)
+    - Phase Noise (Wiener process)
+    - DC Offset
+    - Carrier Frequency Offset (CFO)
+    
+    These impairments are critical for demonstrating the advantage of
+    ML-based equalizers over classical linear methods.
+    """
+    
+    @staticmethod
+    def apply_pa_rapp(
+        signal: np.ndarray,
+        saturation_level: float = 1.0,
+        smoothness: float = 3.0
+    ) -> np.ndarray:
+        """
+        Apply Rapp Power Amplifier model (AM/AM distortion).
+        
+        The Rapp model is commonly used for solid-state amplifiers:
+            G(|x|) = |x| / (1 + (|x|/A_sat)^(2p))^(1/2p)
+        
+        Args:
+            signal: Complex input signal
+            saturation_level: Saturation amplitude (A_sat)
+            smoothness: Smoothness factor p (higher = sharper saturation)
+            
+        Returns:
+            Distorted signal with AM/AM compression
+        """
+        amplitude = np.abs(signal)
+        phase = np.angle(signal)
+        
+        # Rapp AM/AM characteristic
+        normalized_amp = amplitude / saturation_level
+        gain = 1.0 / np.power(1 + np.power(normalized_amp, 2 * smoothness), 1 / (2 * smoothness))
+        output_amplitude = amplitude * gain
+        
+        return output_amplitude * np.exp(1j * phase)
+    
+    @staticmethod
+    def apply_pa_saleh(
+        signal: np.ndarray,
+        alpha_a: float = 2.1587,
+        beta_a: float = 1.1517,
+        alpha_p: float = 4.0033,
+        beta_p: float = 9.1040
+    ) -> np.ndarray:
+        """
+        Apply Saleh Power Amplifier model (AM/AM + AM/PM distortion).
+        
+        Saleh model for traveling-wave tube amplifiers:
+            AM/AM: A(r) = alpha_a * r / (1 + beta_a * r^2)
+            AM/PM: Phi(r) = alpha_p * r^2 / (1 + beta_p * r^2)
+        
+        Args:
+            signal: Complex input signal
+            alpha_a, beta_a: AM/AM parameters
+            alpha_p, beta_p: AM/PM parameters
+            
+        Returns:
+            Distorted signal with both AM/AM and AM/PM
+        """
+        r = np.abs(signal)
+        phase_in = np.angle(signal)
+        
+        # AM/AM conversion
+        A_r = alpha_a * r / (1 + beta_a * r**2)
+        
+        # AM/PM conversion (radians)
+        phi_r = alpha_p * r**2 / (1 + beta_p * r**2)
+        
+        return A_r * np.exp(1j * (phase_in + phi_r))
+    
+    @staticmethod
+    def apply_iq_imbalance(
+        signal: np.ndarray,
+        amplitude_imbalance_db: float = 1.0,
+        phase_imbalance_deg: float = 5.0
+    ) -> np.ndarray:
+        """
+        Apply IQ imbalance (amplitude and phase mismatch).
+        
+        Models mismatch between I and Q branches in mixer:
+            y = alpha * I + j * beta * (cos(phi)*Q + sin(phi)*I)
+        
+        Args:
+            signal: Complex input signal
+            amplitude_imbalance_db: Amplitude mismatch in dB
+            phase_imbalance_deg: Phase mismatch in degrees
+            
+        Returns:
+            Signal with IQ imbalance
+        """
+        # Convert parameters
+        g = 10 ** (amplitude_imbalance_db / 20)  # Linear amplitude ratio
+        phi = np.deg2rad(phase_imbalance_deg)
+        
+        I = np.real(signal)
+        Q = np.imag(signal)
+        
+        # Apply imbalance
+        I_out = I
+        Q_out = g * (np.cos(phi) * Q + np.sin(phi) * I)
+        
+        return I_out + 1j * Q_out
+    
+    @staticmethod
+    def apply_phase_noise(
+        signal: np.ndarray,
+        phase_noise_power_dbchz: float = -80,
+        sample_rate: float = 1e6
+    ) -> np.ndarray:
+        """
+        Apply phase noise using Wiener process model.
+        
+        Phase noise is modeled as integrated white noise:
+            theta[n] = theta[n-1] + w[n], w ~ N(0, sigma^2)
+        
+        Args:
+            signal: Complex input signal
+            phase_noise_power_dbchz: Phase noise PSD in dBc/Hz at 1MHz offset
+            sample_rate: Sample rate in Hz
+            
+        Returns:
+            Signal with phase noise
+        """
+        n_samples = len(signal)
+        
+        # Convert dBc/Hz to variance
+        # Simplified model: sigma^2 proportional to noise power
+        pn_power = 10 ** (phase_noise_power_dbchz / 10)
+        sigma = np.sqrt(pn_power * sample_rate)
+        
+        # Generate Wiener process (cumulative sum of Gaussian)
+        phase_increments = sigma * np.random.randn(n_samples)
+        phase_noise = np.cumsum(phase_increments)
+        
+        return signal * np.exp(1j * phase_noise)
+    
+    @staticmethod
+    def apply_dc_offset(
+        signal: np.ndarray,
+        dc_offset_i: float = 0.01,
+        dc_offset_q: float = 0.01
+    ) -> np.ndarray:
+        """
+        Apply DC offset to I and Q components.
+        
+        Args:
+            signal: Complex input signal
+            dc_offset_i: DC offset for I component (relative to signal amplitude)
+            dc_offset_q: DC offset for Q component
+            
+        Returns:
+            Signal with DC offset
+        """
+        signal_power = np.mean(np.abs(signal) ** 2)
+        dc_magnitude = np.sqrt(signal_power)
+        
+        return signal + dc_magnitude * (dc_offset_i + 1j * dc_offset_q)
+    
+    @staticmethod
+    def apply_cfo(
+        signal: np.ndarray,
+        cfo_hz: float = 100,
+        sample_rate: float = 1e6
+    ) -> np.ndarray:
+        """
+        Apply Carrier Frequency Offset.
+        
+        CFO causes phase rotation that increases with time:
+            y[n] = x[n] * exp(j * 2 * pi * cfo * n / fs)
+        
+        Args:
+            signal: Complex input signal
+            cfo_hz: Carrier frequency offset in Hz
+            sample_rate: Sample rate in Hz
+            
+        Returns:
+            Signal with CFO
+        """
+        n = np.arange(len(signal))
+        phase_rotation = 2 * np.pi * cfo_hz * n / sample_rate
+        
+        return signal * np.exp(1j * phase_rotation)
+    
+    @staticmethod
+    def apply_all(
+        signal: np.ndarray,
+        pa_enabled: bool = True,
+        pa_saturation: float = 1.0,
+        iq_imbalance_enabled: bool = True,
+        iq_amplitude_db: float = 1.0,
+        iq_phase_deg: float = 5.0,
+        phase_noise_enabled: bool = True,
+        phase_noise_dbchz: float = -80,
+        dc_offset_enabled: bool = False,
+        cfo_enabled: bool = False
+    ) -> np.ndarray:
+        """
+        Apply all non-linear impairments in realistic order.
+        
+        Order: PA → IQ Imbalance → Phase Noise → DC Offset → CFO
+        """
+        output = signal.copy()
+        
+        if pa_enabled:
+            output = NonLinearImpairments.apply_pa_rapp(output, pa_saturation)
+        
+        if iq_imbalance_enabled:
+            output = NonLinearImpairments.apply_iq_imbalance(output, iq_amplitude_db, iq_phase_deg)
+        
+        if phase_noise_enabled:
+            output = NonLinearImpairments.apply_phase_noise(output, phase_noise_dbchz)
+        
+        if dc_offset_enabled:
+            output = NonLinearImpairments.apply_dc_offset(output)
+        
+        if cfo_enabled:
+            output = NonLinearImpairments.apply_cfo(output)
+        
+        return output
+
+
+# =============================================================================
 # Channel Models
 # =============================================================================
 

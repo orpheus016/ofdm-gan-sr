@@ -188,6 +188,8 @@ class SyntheticOFDMDataset(Dataset):
     
     Generates random QAM symbols, modulates them, and applies
     channel effects. Useful for initial training and testing.
+    
+    Enhanced with non-linear impairment support for LSI Contest.
     """
     
     def __init__(
@@ -195,7 +197,12 @@ class SyntheticOFDMDataset(Dataset):
         n_samples: int = 10000,
         frame_length: int = 16,
         snr_range: Tuple[float, float] = (0, 30),
-        channel_type: str = 'awgn'
+        channel_type: str = 'awgn',
+        nonlinear: bool = False,
+        pa_saturation: float = 1.0,
+        iq_imbalance_db: float = 1.0,
+        iq_phase_deg: float = 5.0,
+        phase_noise_dbchz: float = -80
     ):
         """
         Initialize synthetic dataset.
@@ -205,11 +212,23 @@ class SyntheticOFDMDataset(Dataset):
             frame_length: OFDM frame length
             snr_range: SNR range in dB
             channel_type: Channel model
+            nonlinear: Enable non-linear impairments
+            pa_saturation: PA saturation level (lower = more compression)
+            iq_imbalance_db: IQ amplitude imbalance in dB
+            iq_phase_deg: IQ phase imbalance in degrees
+            phase_noise_dbchz: Phase noise power in dBc/Hz
         """
         self.n_samples = n_samples
         self.frame_length = frame_length
         self.snr_range = snr_range
         self.channel = ChannelModel(channel_type)
+        
+        # Non-linear impairment settings
+        self.nonlinear = nonlinear
+        self.pa_saturation = pa_saturation
+        self.iq_imbalance_db = iq_imbalance_db
+        self.iq_phase_deg = iq_phase_deg
+        self.phase_noise_dbchz = phase_noise_dbchz
         
     def __len__(self) -> int:
         return self.n_samples
@@ -227,11 +246,28 @@ class SyntheticOFDMDataset(Dataset):
         # IFFT to get time-domain (OFDM-like signal)
         clean_complex = np.fft.ifft(freq_symbols) * np.sqrt(n_freq)
         
+        # Apply non-linear impairments if enabled
+        distorted_complex = clean_complex.copy()
+        if self.nonlinear:
+            from .ofdm_utils import NonLinearImpairments
+            distorted_complex = NonLinearImpairments.apply_all(
+                distorted_complex,
+                pa_enabled=True,
+                pa_saturation=self.pa_saturation,
+                iq_imbalance_enabled=True,
+                iq_amplitude_db=self.iq_imbalance_db,
+                iq_phase_deg=self.iq_phase_deg,
+                phase_noise_enabled=True,
+                phase_noise_dbchz=self.phase_noise_dbchz,
+                dc_offset_enabled=False,
+                cfo_enabled=False
+            )
+        
         # Random SNR
         snr = np.random.uniform(*self.snr_range)
         
         # Apply channel
-        noisy_complex, _ = self.channel.apply(clean_complex, snr)
+        noisy_complex, _ = self.channel.apply(distorted_complex, snr)
         
         # Convert to I/Q
         clean_iq = np.stack([
